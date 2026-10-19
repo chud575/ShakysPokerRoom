@@ -14,7 +14,7 @@ const S = {
   ws: null, token: localStorage.getItem('pr.token') || '', user: null,
   screen: 'login', tableId: sessionStorage.getItem('pr.table') || null,
   clubId: sessionStorage.getItem('pr.club') || null, clubs: [], club: null, balances: {}, ctab: 'tables',
-  ledgerUser: '',
+  ledgerUser: '', tourneyId: sessionStorage.getItem('pr.tourney') || null, tview: null,
   view: null, lastEnd: null, offset: 0, sel: new Set(), raiseTo: null, retry: 0, refN: 0,
   histText: '', histId: 0,
 };
@@ -51,7 +51,7 @@ function onMessage(m) {
       S.user = m.user;
       localStorage.setItem('pr.token', S.token);
       paintMe();
-      if (S.tableId) openTable(S.tableId); else if (S.clubId) openClub(S.clubId); else showClubs();
+      if (S.tableId) openTable(S.tableId); else if (S.tourneyId) openTourney(S.tourneyId); else if (S.clubId) openClub(S.clubId); else showClubs();
       break;
     case 'clubs':
       S.clubs = m.clubs;
@@ -70,6 +70,17 @@ function onMessage(m) {
       if (S.screen === 'clubs') send({ t: 'clubs' });
       break;
     case 'ledger': if (m.clubId === S.clubId) paintLedger(m.rows); break;
+    case 'tourney':
+      if (S.screen === 'club' && S.club && m.view.clubId === S.clubId && !S.tourneyId) { openTourney(m.view.id); }   // just created
+      if (m.view.id === S.tourneyId) { S.tview = m.view; S.offset = m.view.now - Date.now(); if (S.screen === 'tourney') paintTourney(); }
+      break;
+    case 'moved':
+      // the tournament seated you (start, late registration, balancing, a table breaking)
+      if (S.screen === 'tourney' || (S.screen === 'table' && S.view?.tourney?.id === m.tourneyId)) { S.tourneyId = m.tourneyId; openTable(m.tableId); toast('You have a seat — good luck!'); }
+      break;
+    case 'tableGone':
+      if (m.tableId === S.tableId) { if (m.tourneyId) openTourney(m.tourneyId); else if (S.clubId) openClub(S.clubId); else showClubs(); }
+      break;
     case 'report': if (m.clubId === S.clubId) paintReport(m); break;
     case 'table':
       if (m.view.id !== S.tableId) return;
@@ -98,6 +109,7 @@ function onMessage(m) {
       if (m.code === 'auth') { S.token = ''; localStorage.removeItem('pr.token'); showLogin(m.message); return; }
       if (m.code === 'club' && (S.screen === 'club' || S.screen === 'table') && /not a member|waiting for approval/.test(m.message)) { showClubs(); }
       if (S.tfPending) { $('#tfErr').textContent = m.message; S.tfPending = false; return; }
+      if (S.toPending) { $('#toErr').textContent = m.message; S.toPending = false; return; }
       toast(m.message);
       break;
   }
@@ -109,7 +121,7 @@ function setScreen(s) {
   S.screen = s;
   document.body.className = 'screen-' + s + (S.club && S.club.club.id === S.clubId && ['owner', 'admin'].includes(S.club.me.role) ? ' isAdmin' : '');
   $('#back').hidden = s === 'login' || s === 'clubs';
-  $('#back').textContent = s === 'table' ? '◀ Club' : '◀ Clubs';
+  $('#back').textContent = s === 'table' ? (S.view?.tourney || S.tourneyId ? '◀ Tournament' : '◀ Club') : s === 'tourney' ? '◀ Club' : '◀ Clubs';
   $('#logout').hidden = s === 'login';
   if (s !== 'table') $('#tableTitle').textContent = '';
   paintMe();
@@ -121,11 +133,25 @@ function leaveTableView() {
 }
 function showClubs() {
   leaveTableView();
+  leaveTourneyView();
   S.clubId = null; sessionStorage.removeItem('pr.club');
   setScreen('clubs'); paintClubs(); send({ t: 'clubs' });
 }
+function leaveTourneyView() {
+  if (S.tourneyId) send({ t: 'unwatchTourney', tourneyId: S.tourneyId });
+  S.tourneyId = null; S.tview = null; sessionStorage.removeItem('pr.tourney');
+}
+function openTourney(id) {
+  leaveTableView();
+  S.tourneyId = id; sessionStorage.setItem('pr.tourney', id);
+  if (!S.tview || S.tview.id !== id) S.tview = null;
+  setScreen('tourney'); paintTourney();
+  send({ t: 'tourney', tourneyId: id });
+  if (S.clubId && (!S.club || S.club.club.id !== S.clubId)) send({ t: 'club', clubId: S.clubId });   // club balance, admin role
+}
 function openClub(id) {
   leaveTableView();
+  leaveTourneyView();
   S.clubId = id; sessionStorage.setItem('pr.club', id);
   if (!S.club || S.club.club.id !== id) S.club = null;
   setScreen('club'); paintClub();
@@ -187,8 +213,137 @@ function paintClub() {
   document.querySelectorAll('.ctab').forEach(t => t.classList.toggle('active', t.dataset.ctab === S.ctab));
   document.querySelectorAll('.cpane').forEach(p => p.classList.toggle('active', p.id === 'cp-' + S.ctab));
   paintClubTables();
+  paintClubTourneys();
   if (isAdmin()) paintMembers();
 }
+
+const KINDNAME = { sng: 'Sit & Go', mtt: 'Tournament' };
+const STATUS = { registering: 'registering', running: 'running', finished: 'finished', cancelled: 'cancelled' };
+function paintClubTourneys() {
+  const pane = $('#cp-tourneys'); pane.innerHTML = '';
+  const list = S.club.tourneys || [];
+  const bar = el('div', 'paneBar');
+  bar.append(el('span', 'dim', list.length ? '' : 'No tournaments running or open for registration right now.'));
+  if (isAdmin()) { const b = el('button', 'btn primary', '+ New tournament'); b.onclick = openTourneyForm; bar.append(b); }
+  pane.append(bar);
+  const grid = el('div', 'tableGrid');
+  const recent = S.club.recentTourneys || [];
+  for (const t of [...list, ...recent]) {
+    const c = el('div', 'tcard');
+    const top = el('div', 'meta'); top.append(el('b', null, t.name), el('span', 'statusPill ' + t.status, STATUS[t.status]));
+    const meta = el('div', 'meta');
+    meta.append(el('span', null, KINDNAME[t.kind] + ' · ' + t.game + ' · buy-in ' + fmt(t.buyIn)), el('span', 'seats', t.entrants + '/' + t.maxPlayers));
+    c.append(top, meta);
+    if (t.startAt && t.status === 'registering') c.append(el('div', 'dim', 'starts ' + when(t.startAt)));
+    c.onclick = () => openTourney(t.id);
+    grid.append(c);
+  }
+  pane.append(grid);
+}
+
+/* ---------- tournament lobby ---------- */
+
+const mmss = ms => { if (ms == null) return '—'; ms = Math.max(0, ms); const m = Math.floor(ms / 60000), s = Math.floor(ms / 1000) % 60; return m + ':' + String(s).padStart(2, '0'); };
+
+function paintTourney() {
+  const v = S.tview;
+  $('#tnTitle').textContent = v ? v.name : 'Loading…';
+  const sub = $('#tnSub'); sub.innerHTML = '';
+  const act = $('#tnActions'); act.innerHTML = '';
+  if (!v) return;
+  sub.append(el('span', 'statusPill ' + v.status, STATUS[v.status]), ' ',
+    KINDNAME[v.kind] + ' · ' + (v.mixedName ? v.mixedName + ' (' + v.games.map(g => g.name).join(', ') + ')' : v.games[0].name + ' ' + STRUCT[v.games[0].structure]));
+  const btn = (t, cls, f) => { const b = el('button', 'btn ' + cls, t); b.onclick = f; act.append(b); };
+  const me = v.me;
+  if (!me && (v.status === 'registering' || v.lateReg)) btn('Register · ' + fmt(v.buyIn), 'primary', () => send({ t: 'register', tourneyId: v.id }));
+  if (me && me.status === 'registered' && v.status === 'registering') btn('Unregister', 'ghost', () => send({ t: 'unregister', tourneyId: v.id }));
+  if (me && me.tableId) btn('Go to my table', 'primary', () => openTable(me.tableId));
+  if (S.club && ['owner', 'admin'].includes(S.club.me.role) && v.status === 'registering') {
+    if (v.kind === 'mtt') btn('Start now', 'ghost', () => { if (confirm('Start the tournament now with ' + v.entrants + ' players?')) send({ t: 'startTourney', tourneyId: v.id }); });
+    btn('Cancel', 'ghost', () => { if (confirm('Cancel and refund everyone?')) send({ t: 'cancelTourney', tourneyId: v.id }); });
+  }
+
+  const info = $('#tnInfo'); info.innerHTML = '';
+  info.append(el('span', 'dim', 'Players'), el('span', 'big', v.status === 'running' ? v.remaining + ' of ' + v.entrants : v.entrants + ' / ' + v.maxPlayers));
+  info.append(el('span', 'dim', 'Buy-in ' + fmt(v.buyIn) + ' · stack ' + fmt(v.startingStack) + ' · ' + v.seatsPerTable + ' per table'));
+  if (v.status === 'registering') info.append(el('span', 'dim', v.kind === 'sng' ? 'Starts when ' + v.maxPlayers + ' have registered' : v.startAt ? 'Starts ' + when(v.startAt) : 'Starts when the club starts it'));
+  if (me) info.append(el('span', null, me.place ? (me.place === 1 && v.status === 'finished' ? '🏆 You won' : 'You finished ' + ordinal(me.place)) + (me.prize ? ' · +' + fmt(me.prize) : '') : me.status === 'registered' ? 'You are registered' : 'You are playing'));
+
+  const lv = $('#tnLevel'); lv.innerHTML = '';
+  if (v.level) {
+    lv.append(el('span', 'dim', 'Level ' + v.level.n + ' · ' + v.levelMinutes + ' min'), el('span', 'big', fmt(v.level.sb) + ' / ' + fmt(v.level.bb) + (v.level.ante ? ' · ante ' + fmt(v.level.ante) : '')));
+    const nx = el('span', 'lvlBar'); nx.dataset.nextAt = v.level.nextAt || '';
+    lv.append(nx);
+    if (v.level.next) lv.append(el('span', 'dim', 'next ' + fmt(v.level.next.sb) + ' / ' + fmt(v.level.next.bb) + (v.level.next.ante ? ' · ante ' + fmt(v.level.next.ante) : '')));
+    if (v.lateReg) lv.append(el('span', 'dim', 'Late registration open'));
+  } else if (v.status === 'registering') lv.append(el('span', 'dim', 'Level 1 blinds start near 1/100 of the stack'), el('span', 'big', fmt(v.levelMinutes) + ' min levels'));
+  else lv.append(el('span', 'dim', 'Levels'), el('span', 'big', fmt(v.levelMinutes) + ' min'), el('span', 'dim', v.status === 'finished' ? 'Tournament over' : 'Cancelled — buy-ins refunded'));
+
+  const pay = $('#tnPay'); pay.innerHTML = '';
+  pay.append(el('span', 'dim', 'Prize pool'), el('span', 'big', fmt(v.status === 'registering' ? v.buyIn * v.entrants : v.pool)));
+  pay.append(el('span', 'dim', v.payouts.map((a, i) => ordinal(i + 1) + ' ' + fmt(a)).join(' · ')));
+
+  const pl = $('#tnPlayers'); pl.innerHTML = '';
+  const tbl = el('table', 'grid'); const hr = el('tr');
+  for (const h of ['#', 'Player', 'Chips', 'Prize']) hr.append(el('th', h === 'Chips' || h === 'Prize' ? 'num' : null, h));
+  const th = el('thead'); th.append(hr); tbl.append(th);
+  const body = el('tbody');
+  v.players.forEach((p, i) => {
+    const tr = el('tr', (p.name === S.user?.name ? 'me' : '') + (p.status === 'busted' ? ' out' : ''));
+    tr.append(el('td', null, p.place ? ordinal(p.place) : p.status === 'playing' ? String(i + 1) : ''), el('td', null, p.name),
+      el('td', 'num', p.chips != null ? fmt(p.chips) : p.status === 'busted' ? 'out' : ''), el('td', 'num', p.prize ? fmt(p.prize) : ''));
+    body.append(tr);
+  });
+  tbl.append(body); pl.append(tbl);
+
+  const tb = $('#tnTables'); tb.innerHTML = '';
+  if (!v.tables.length) tb.append(el('p', 'dim', v.status === 'registering' ? 'Tables open when it starts.' : 'No tables.'));
+  for (const t of v.tables) {
+    const d = el('div', 'tnTable'); d.append(el('span', null, t.name.replace(/^.* · /, '')), el('span', 'dim', t.players + ' players'));
+    d.onclick = () => openTable(t.id);
+    tb.append(d);
+  }
+  tickLevel();
+}
+function ordinal(n) { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+function tickLevel() {
+  for (const e of document.querySelectorAll('[data-next-at]')) {
+    const at = Number(e.dataset.nextAt);
+    e.textContent = at ? 'next level in ' + mmss(at - (Date.now() + S.offset)) : 'last level';
+  }
+}
+setInterval(tickLevel, 1000);
+
+function openTourneyForm() {
+  const box = $('#toGames'); box.innerHTML = '';
+  for (const [id, name, structs] of GAMES) {
+    const l = el('label'); const cb = el('input'); cb.type = 'checkbox'; cb.value = id;
+    const sel = el('select'); for (const x of structs) sel.append(new Option(x === 'NL' ? 'No Limit' : x === 'PL' ? 'Pot Limit' : 'Limit', x));
+    l.append(cb, name, sel); box.append(l);
+  }
+  $('#toErr').textContent = '';
+  $('#tourneyModal').classList.toggle('mtt', $('#toKind').value === 'mtt');
+  $('#tourneyModal').classList.add('open');
+}
+$('#toKind').onchange = () => {
+  const mtt = $('#toKind').value === 'mtt';
+  $('#tourneyModal').classList.toggle('mtt', mtt);
+  $('#toMax').value = mtt ? 100 : 6;
+  $('#toLevel').value = mtt ? 12 : 6;
+};
+$('#tourneyForm').onsubmit = e => {
+  e.preventDefault();
+  const games = [...document.querySelectorAll('#toGames label')].filter(l => l.querySelector('input').checked)
+    .map(l => ({ game: l.querySelector('input').value, structure: l.querySelector('select').value }));
+  if (!games.length) { $('#toErr').textContent = 'Pick at least one game.'; return; }
+  const n = id => Number($(id).value);
+  const mtt = $('#toKind').value === 'mtt';
+  S.toPending = true;
+  send({ t: 'createTourney', clubId: S.clubId, tourney: { name: $('#toName').value, kind: mtt ? 'mtt' : 'sng', games, buyIn: n('#toBuyIn'), startingStack: n('#toStack'),
+    maxPlayers: n('#toMax'), seatsPerTable: n('#toSeats'), levelMinutes: n('#toLevel'), actionSeconds: n('#toAct'), handsPerGame: n('#toHpg'),
+    mixedName: $('#toName').value, startAt: mtt && $('#toStart').value ? new Date($('#toStart').value).toISOString() : undefined, lateRegLevels: mtt ? n('#toLate') : 0 } });
+  setTimeout(() => { if (S.toPending) { S.toPending = false; closeModals(); } }, 400);
+};
 
 function paintClubTables() {
   const pane = $('#cp-tables'); pane.innerHTML = '';
@@ -262,7 +417,8 @@ function paintMembers() {
 
 /* ---------- ledger & report ---------- */
 
-const KIND = { issue: 'Chips issued', redeem: 'Chips redeemed', buyin: 'Buy-in', rebuy: 'Rebuy', cashout: 'Cash-out' };
+const KIND = { issue: 'Chips issued', redeem: 'Chips redeemed', buyin: 'Buy-in', rebuy: 'Rebuy', cashout: 'Cash-out',
+  tbuyin: 'Tournament entry', trefund: 'Tournament refund', tprize: 'Tournament prize' };
 const when = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 function requestLedger() { send({ t: 'ledger', clubId: S.clubId, userId: S.ledgerUser || undefined, limit: 1000 }); }
@@ -418,11 +574,16 @@ function paintTable() {
   const v = S.view;
   if (!v) return;
   const h = v.hand;
-  $('#tableTitle').textContent = v.name + ' · ' + v.stakes.smallBet + '/' + v.stakes.bigBet;
+  $('#tableTitle').textContent = v.name + (v.tourney ? '' : ' · ' + v.stakes.smallBet + '/' + v.stakes.bigBet);
   const gl = $('#gameLine'); gl.innerHTML = '';
-  gl.append(el('b', null, v.game.name + ' ' + STRUCT[v.game.structure]), '  ·  ' + v.stakes.smallBet + '/' + v.stakes.bigBet);
+  gl.append(el('b', null, v.game.name + ' ' + STRUCT[v.game.structure]), v.tourney ? '' : '  ·  ' + v.stakes.smallBet + '/' + v.stakes.bigBet);
   if (v.next && v.next.id !== v.game.id) gl.append('  ·  next: ' + v.next.name);
   if (h) gl.append('  ·  hand #' + h.id);
+  if (v.tourney) {
+    const T = v.tourney;
+    gl.append('  ·  ', el('b', null, T.name), '  ·  level ' + T.level + ': ' + fmt(T.sb) + '/' + fmt(T.bb) + (T.ante ? ' ante ' + fmt(T.ante) : '') + '  ·  ' + T.remaining + ' left  ·  ');
+    const nx = el('span', 'lvlBar'); nx.dataset.nextAt = T.nextAt || ''; gl.append(nx);
+  }
 
   const seats = $('#seats'); seats.innerHTML = '';
   const felt = $('#felt');
@@ -444,7 +605,8 @@ function paintTable() {
     let d;
     if (!s) {
       d = el('div', 'seat empty' + (!v.mySeat ? ' open' : ''), !v.mySeat ? 'Seat ' + seatNo + ' — sit' : 'Seat ' + seatNo);
-      if (!v.mySeat) d.onclick = () => askBuyIn(seatNo);
+      if (!v.mySeat && !v.tourney) d.onclick = () => askBuyIn(seatNo);
+      if (v.tourney) { d.className = 'seat empty'; d.textContent = 'Seat ' + seatNo; }
     } else {
       const acting = h && !h.done && h.toAct === seatNo;
       d = el('div', 'seat' + (seatNo === v.mySeat ? ' hero' : '') + (acting ? ' acting' : '') + (s.folded ? ' folded' : '') + (!s.inHand ? ' out' : ''));
@@ -543,7 +705,7 @@ function paintActions() {
   const v = S.view, h = v.hand, L = h && !h.done ? h.legal : null;
   if (!L) {
     let msg = '';
-    if (!v.mySeat) msg = 'Watching — pick an empty seat to play.';
+    if (!v.mySeat) msg = v.tourney ? 'Watching this tournament table.' : 'Watching — pick an empty seat to play.';
     else if (h && !h.done && h.toAct) msg = 'Waiting for ' + (v.seats[h.toAct - 1]?.name || '…');
     else if (v.seats[v.mySeat - 1]?.sittingOut) msg = 'You are sitting out.';
     else msg = 'Next hand coming up…';
@@ -624,6 +786,11 @@ function paintSeatBar() {
   if (!v.mySeat) return;
   const s = v.seats[v.mySeat - 1];
   const b = (t, f) => { const x = el('button', 'btn ghost', t); x.onclick = f; bar.append(x); };
+  if (v.tourney) {
+    b(s.sittingOut ? "I'm back" : 'Sit out (you will be blinded)', () => send({ t: 'sitOut', tableId: v.id, on: !s.sittingOut }));
+    b('Tournament lobby', () => openTourney(v.tourney.id));
+    return;
+  }
   b(s.sittingOut ? 'Sit in' : 'Sit out next hand', () => send({ t: 'sitOut', tableId: v.id, on: !s.sittingOut }));
   if (!s.inHand || v.hand?.done) b('Add chips', () => {
     const room = v.buyIn.max - s.stack;
@@ -741,7 +908,11 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + t.dataset.pane));
 });
-$('#back').onclick = () => { if (S.screen === 'table' && S.clubId) openClub(S.clubId); else showClubs(); };
+$('#back').onclick = () => {
+  if (S.screen === 'table' && S.view?.tourney) openTourney(S.view.tourney.id);
+  else if ((S.screen === 'table' || S.screen === 'tourney') && S.clubId) openClub(S.clubId);
+  else showClubs();
+};
 $('#logout').onclick = () => { S.token = ''; S.user = null; localStorage.removeItem('pr.token'); S.ws.close(); showLogin(); paintMe(); setTimeout(connect, 50); };
 $('#loginForm').onsubmit = e => {
   e.preventDefault();

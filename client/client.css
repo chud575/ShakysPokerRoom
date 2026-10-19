@@ -31,7 +31,7 @@ button,select,input{font:inherit;color:inherit}
 
 /* ---------- screens ---------- */
 .screen{display:none;height:calc(100vh - var(--top))}
-body.screen-login #login,body.screen-clubs #clubs,body.screen-club #club{display:block;overflow:auto}
+body.screen-login #login,body.screen-clubs #clubs,body.screen-club #club,body.screen-tourney #tourney{display:block;overflow:auto}
 body.screen-table #table{display:grid;grid-template-columns:minmax(0,1fr) 300px}
 .panel{max-width:360px;margin:12vh auto 0;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:10px}
 .panel h2{margin:0}
@@ -44,7 +44,7 @@ body.screen-table #table{display:grid;grid-template-columns:minmax(0,1fr) 300px}
 .twoForms{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:22px}
 .box{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px}
 .box h3{margin:0}.box p{margin:0}
-input.inp,.box input,.formGrid input,.ledgerBar select,.ledgerBar input,.mrow input{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 9px;min-width:0}
+input.inp,.box input,.formGrid input,.formGrid select,.ledgerBar select,.ledgerBar input,.mrow input{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 9px;min-width:0}
 .pill{display:inline-block;font-size:10.5px;border-radius:9px;padding:0 7px;border:1px solid var(--line);color:var(--dim)}
 .pill.owner{color:#ffd79a;border-color:#6b5420}.pill.admin{color:#b8d8ff;border-color:#2f5a8c}.pill.pending{color:var(--warn);border-color:#6b5a20}
 .clubHead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
@@ -203,3 +203,19 @@ h4.sec{margin:14px 0 6px;font-size:11px;letter-spacing:1.2px;text-transform:uppe
   .sizer input[type=range]{flex:1;width:auto}
   #felt{min-width:0;width:calc(100% - 16px);aspect-ratio:3/4.2;border-radius:46%/36%}
 }
+
+/* tournaments */
+.tnGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:14px 0}
+.tnGrid .box{gap:4px}
+.tnGrid .big{font-size:20px;font-weight:700;color:#fff;font-variant-numeric:tabular-nums}
+.tnCols{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px}
+@media (max-width:760px){.tnCols{grid-template-columns:1fr}}
+.tnTable{display:flex;justify-content:space-between;padding:7px 10px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px;cursor:pointer;background:var(--bg2)}
+.tnTable:hover{border-color:var(--accent)}
+.statusPill{font-size:11px;border-radius:9px;padding:1px 8px;border:1px solid var(--line)}
+.statusPill.registering{color:#b8d8ff;border-color:#2f5a8c}.statusPill.running{color:#b8ffdb;border-color:#2ba36a}
+.statusPill.finished,.statusPill.cancelled{color:var(--dim)}
+tr.me td{color:#fff;font-weight:600}
+tr.out td{color:var(--dim2)}
+#tourneyModal:not(.mtt) .mttOnly{display:none}
+.lvlBar{font-variant-numeric:tabular-nums;color:#ffe9a8}

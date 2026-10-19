@@ -10,6 +10,7 @@ import { GAMES, type GameId, type Structure } from '../../engine/src/games.ts';
 import { handHistory } from '../../engine/src/hh.ts';
 import { newServerSeed, commitment, handSeed } from '../../engine/src/rng.ts';
 import { stakesFor, type TableStakes } from './stakes.ts';
+export type { TableStakes };
 import type { Store, User } from './store.ts';
 
 export interface TableConfig {
@@ -30,6 +31,20 @@ export interface TableConfig {
   betweenHandsMs: number;
   capBets?: number;
   uncappedHeadsUp?: boolean;
+  /** set on tournament tables: chips are tournament chips, seats are assigned */
+  tourneyId?: string;
+}
+
+/** What a tournament table asks its tournament (see tournament.ts). */
+export interface TableDirector {
+  /** before each hand, with no hand in progress: move players in/out; false = hold the table */
+  beforeHand(t: Table): boolean;
+  /** stakes and level for the hand about to start */
+  stakesNow(): { stakes: TableStakes; level: number };
+  /** header info for hand histories */
+  info(): { id: string; buyIn: string };
+  /** after every hand at the table (busts are seats left with no chips) */
+  afterHand(t: Table): void;
 }
 
 export interface SeatState {
@@ -113,17 +128,18 @@ export class Table {
   private ev: TableEvents;
   private turnTimer: unknown = null;
   private startTimer: unknown = null;
+  director: TableDirector | null;
 
-  constructor(cfg: TableConfig, store: Store, ev: TableEvents, clock: Clock = realClock, state?: TableState) {
+  constructor(cfg: TableConfig, store: Store, ev: TableEvents, clock: Clock = realClock, state?: TableState, director: TableDirector | null = null) {
     validateConfig(cfg);
-    this.cfg = cfg; this.store = store; this.ev = ev; this.clock = clock;
+    this.cfg = cfg; this.store = store; this.ev = ev; this.clock = clock; this.director = director;
     this.st = state ?? { seats: new Array(cfg.maxSeats).fill(null), button: 0, handsPlayed: 0, rotation: 0, handsThisGame: 0 };
     if (!state) store.saveTable(cfg.id, cfg.clubId, cfg, this.st);
   }
 
   /** Rebuild a table (and any hand in progress) from the store. */
-  static restore(store: Store, row: { config: TableConfig; state: TableState }, ev: TableEvents, clock: Clock = realClock): Table {
-    const t = new Table(row.config, store, ev, clock, row.state);
+  static restore(store: Store, row: { config: TableConfig; state: TableState }, ev: TableEvents, clock: Clock = realClock, director: TableDirector | null = null): Table {
+    const t = new Table(row.config, store, ev, clock, row.state, director);
     const open = store.openHand(row.config.id);
     if (open) {
       const state = startHand(open.config);
@@ -157,7 +173,10 @@ export class Table {
 
   /* ---------------- seating ---------------- */
 
+  get isTourney(): boolean { return !!this.cfg.tourneyId; }
+
   sit(user: User, seat: number, buyIn: number, clientSeed = ''): void {
+    if (this.isTourney) throw new TableError('seat', 'tournament seats are assigned — register for the tournament');
     if (this.st.closing) throw new TableError('closed', 'this table is closing');
     if (!(seat >= 1 && seat <= this.cfg.maxSeats)) throw new TableError('seat', 'no such seat');
     if (this.st.seats[seat - 1]) throw new TableError('seat', 'seat taken');
@@ -175,6 +194,7 @@ export class Table {
 
   /** top up between hands (or while not in the hand), up to the max buy-in */
   addChips(userId: string, amount: number): void {
+    if (this.isTourney) throw new TableError('seat', 'no rebuys in this tournament');
     const seat = this.seatOf(userId);
     if (!seat) throw new TableError('seat', 'not seated');
     if (this.handIndex(userId) >= 0 && this.hand!.state.phase !== 'done') throw new TableError('busy', 'wait for the hand to finish');
@@ -186,6 +206,7 @@ export class Table {
   }
 
   leave(userId: string): void {
+    if (this.isTourney) throw new TableError('seat', 'you cannot leave a tournament — sit out instead (you will be blinded)');
     const seat = this.seatOf(userId);
     if (!seat) return;
     const s = this.st.seats[seat - 1]!;
@@ -208,6 +229,39 @@ export class Table {
       this.save();
     });
   }
+
+  /* ---- tournament seating (no club chips move; the director calls these) ---- */
+
+  /** an empty seat, chosen at random */
+  randomEmptySeat(rand: (n: number) => number): number {
+    const free: number[] = [];
+    this.st.seats.forEach((s, i) => { if (!s) free.push(i + 1); });
+    if (!free.length) throw new Error('table full');
+    return free[rand(free.length)];
+  }
+  /** put a tournament player in a seat (they are dealt in from the next hand) */
+  place(seat: number, s: SeatState): void {
+    if (this.st.seats[seat - 1]) throw new Error('seat taken');
+    this.st.seats[seat - 1] = s;
+    this.save();
+    this.ev.changed(this);
+    this.scheduleStart(0);
+  }
+  /** take a player out (moved to another table, or busted).  Only between hands for that player. */
+  unplace(userId: string): SeatState {
+    const seat = this.seatOf(userId);
+    if (!seat) throw new Error('not seated');
+    if (this.inCurrentHand(userId)) throw new Error('in a hand');
+    const s = this.st.seats[seat - 1]!;
+    this.st.seats[seat - 1] = null;
+    this.save();
+    this.ev.changed(this);
+    return s;
+  }
+  playersSeated(): number { return this.st.seats.filter(Boolean).length; }
+  busy(): boolean { return !!this.hand && this.hand.state.phase !== 'done'; }
+  /** nudge a waiting table to try to deal (after players were moved in) */
+  wake(): void { this.scheduleStart(0); }
 
   setSittingOut(userId: string, on: boolean): void {
     const seat = this.seatOf(userId);
@@ -237,12 +291,15 @@ export class Table {
 
   private eligible(): number[] {
     const out: number[] = [];
-    this.st.seats.forEach((s, i) => { if (s && s.stack > 0 && !s.sittingOut && !s.leaving) out.push(i + 1); });
+    // tournament players are dealt in even when away (and folded at once): they get blinded
+    this.st.seats.forEach((s, i) => { if (s && s.stack > 0 && (this.isTourney || (!s.sittingOut && !s.leaving))) out.push(i + 1); });
     return out;
   }
 
   maybeStart(): void {
     if (this.hand || this.st.closing) return;
+    if (this.director && !this.director.beforeHand(this)) return;
+    if (this.st.closing) return;
     const seats = this.eligible();
     if (seats.length < 2) return;
     const { game, structure } = this.current();
@@ -257,9 +314,11 @@ export class Table {
     const id = this.store.nextHandId();
     const serverSeed = newServerSeed();
     const clientSeeds = seats.map(x => this.st.seats[x - 1]!.clientSeed);
+    const lv = this.director?.stakesNow();
     const config: HandConfig = {
       handId: String(id), game, structure,
-      stakes: stakesFor(g, structure, this.cfg.stakes),
+      stakes: stakesFor(g, structure, lv ? lv.stakes : this.cfg.stakes),
+      tournament: lv ? { ...this.director!.info(), level: lv.level } : undefined,
       seats: seats.map(x => { const s = this.st.seats[x - 1]!; return { seat: x, id: s.userId, name: s.name, stack: s.stack }; }),
       button: this.st.button,
       seed: handSeed(serverSeed, String(id), clientSeeds),
@@ -312,7 +371,7 @@ export class Table {
     // a player who already left is folded / stood pat for at once
     const p = h.state.players[h.state.toAct];
     const seat = this.st.seats[p.seat - 1];
-    if (!seat || seat.leaving) { this.autoAct(false); return; }
+    if (!seat || seat.leaving || (this.isTourney && seat.sittingOut)) { this.autoAct(false); return; }
     const bank = seat.timeBank;
     h.turnStarted = this.clock.now();
     h.deadline = h.turnStarted + (this.cfg.actionSeconds + bank) * 1000;
@@ -352,6 +411,7 @@ export class Table {
       });
       this.st.seats.forEach((seat, i) => {
         if (!seat) return;
+        if (this.isTourney) return;                                      // the director handles busts
         if (seat.leaving || this.st.closing) this.cashOut(i + 1);
         else if (seat.stack === 0) seat.sittingOut = true;              // busted: rebuy to play on
       });
@@ -360,6 +420,7 @@ export class Table {
     this.hand = null;
     this.last = h;
     this.ev.handEnded(this, { handId: h.id, serverSeed: h.serverSeed, commitment: h.commitment, clientSeeds: h.clientSeeds, net });
+    this.director?.afterHand(this);
     this.ev.changed(this);
     this.scheduleStart(this.cfg.betweenHandsMs);
   }
@@ -368,6 +429,7 @@ export class Table {
       out now and the rest when the hand ends.  Returns true once empty. */
   shutDown(): boolean {
     this.st.closing = true;
+    if (this.isTourney) { this.save(); this.ev.changed(this); return this.isEmpty(); }
     this.st.seats.forEach((s, i) => { if (s && !this.inCurrentHand(s.userId)) this.cashOut(i + 1); });
     this.save();
     this.ev.changed(this);

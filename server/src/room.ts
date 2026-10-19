@@ -25,11 +25,19 @@
      { t:'sitOut', tableId, on }   { t:'act', tableId, handId, action }
      { t:'seed', clientSeed }                     your entropy for future hands
      { t:'history', handId }                      your history of a finished hand + fairness proof
+     { t:'tourneys', clubId }                     a club's tournaments (live + recent)
+     { t:'createTourney', clubId, tourney }       admin (see tourneyFromRequest)
+     { t:'tourney', tourneyId }                   tournament lobby (and follow its updates)
+     { t:'unwatchTourney', tourneyId }
+     { t:'register', tourneyId } / { t:'unregister', tourneyId }
+     { t:'startTourney', tourneyId } / { t:'cancelTourney', tourneyId }   admin
    Server -> client
      { t:'welcome', user }   { t:'clubs', clubs }   { t:'club', club, me, tables, members?, outstanding? }
      { t:'lobby', clubId, tables }   { t:'table', view }   { t:'ledger', clubId, rows }   { t:'report', clubId, rows }
      { t:'handEnd', tableId, handId, serverSeed, commitment, clientSeeds, net }
      { t:'history', handId, text, proof }   { t:'balance', clubId, balance }   { t:'clubChanged', clubId }
+     { t:'tourneys', clubId, live, recent }   { t:'tourney', view }   { t:'moved', tourneyId, tableId }
+     { t:'tableGone', tableId, tourneyId }       the table you were watching closed
      { t:'error', code, message, ref? }
    Every request may carry `ref`; replies and errors echo it.               */
 
@@ -37,7 +45,8 @@ import { randomBytes } from 'node:crypto';
 import { startHand, applyActionMut } from '../../engine/src/engine.ts';
 import { handHistory } from '../../engine/src/hh.ts';
 import { GAMES, type GameId, type Structure } from '../../engine/src/games.ts';
-import { Table, TableError, realClock, validateConfig, type Clock, type TableConfig, type HandEndInfo } from './table.ts';
+import { Table, TableError, realClock, validateConfig, type Clock, type TableConfig, type HandEndInfo, type TableDirector } from './table.ts';
+import { Tournament, defaultLevels, validateTourney, type TourneyConfig, type TourneyHost } from './tournament.ts';
 import { viewFor, summaryOf } from './views.ts';
 import type { Store, User, Member, Role } from './store.ts';
 
@@ -46,6 +55,8 @@ export interface Conn {
   user: User | null;
   clientSeed: string;
   watching: Set<string>;
+  /** tournament lobbies this connection follows */
+  watchingT?: Set<string>;
 }
 
 const isAdmin = (m: Member | null) => !!m && m.status === 'active' && (m.role === 'owner' || m.role === 'admin');
@@ -77,20 +88,87 @@ export function tableFromRequest(clubId: string, r: any): TableConfig {
   return cfg;
 }
 
+/** Build a tournament config from an admin's request, with sensible defaults. */
+export function tourneyFromRequest(clubId: string, r: any): TourneyConfig {
+  const games: { game: GameId; structure: Structure }[] = (Array.isArray(r?.games) ? r.games : []).slice(0, 12).map((x: any) => {
+    const g = GAMES[x?.game as GameId];
+    if (!g) throw new TableError('tourney', 'unknown game ' + x?.game);
+    return { game: g.id, structure: (x.structure ?? g.defaultStructure) as Structure };
+  });
+  if (!games.length) throw new TableError('tourney', 'pick at least one game');
+  const kind = r.kind === 'mtt' ? 'mtt' : 'sng';
+  const seatsCap = Math.min(...games.map(x => GAMES[x.game].maxSeats));
+  const seatsPerTable = Math.min(seatsCap, Math.max(2, Math.round(Number(r.seatsPerTable ?? Math.min(seatsCap, 9)))));
+  const startingStack = Math.round(Number(r.startingStack ?? 3000));
+  const num = (v: unknown, d: number) => (v == null || v === '' ? d : Number(v));
+  const cfg: TourneyConfig = {
+    id: 'T' + randomBytes(5).toString('hex'),
+    number: String(1_000_000_000 + Number('0x' + randomBytes(4).toString('hex')) % 8_999_999_999),
+    clubId, kind,
+    name: String(r.name ?? '').trim().slice(0, 40) || (kind === 'sng' ? 'Sit & Go' : 'Tournament'),
+    games, handsPerGame: Math.max(1, Math.round(num(r.handsPerGame, games.length > 1 ? 6 : 1))),
+    mixedName: games.length > 1 ? String(r.mixedName ?? r.name ?? 'Mixed').slice(0, 20) : undefined,
+    buyIn: Math.round(num(r.buyIn, 0)), startingStack,
+    levels: Array.isArray(r.levels) && r.levels.length ? r.levels.map((l: any) => ({ sb: Math.round(+l.sb), bb: Math.round(+l.bb), ante: Math.round(+l.ante || 0) })) : defaultLevels(startingStack),
+    levelMinutes: Math.max(0.05, Math.min(120, num(r.levelMinutes, kind === 'sng' ? 6 : 12))),
+    seatsPerTable,
+    maxPlayers: Math.round(num(r.maxPlayers, kind === 'sng' ? seatsPerTable : 200)),
+    minPlayers: Math.round(num(r.minPlayers, kind === 'sng' ? num(r.maxPlayers, seatsPerTable) : 2)),
+    startAt: kind === 'mtt' && r.startAt ? new Date(r.startAt).toISOString() : undefined,
+    lateRegLevels: kind === 'mtt' ? Math.max(0, Math.round(num(r.lateRegLevels, 4))) : 0,
+    payoutPct: Array.isArray(r.payoutPct) && r.payoutPct.length ? r.payoutPct.map(Number) : undefined,
+    actionSeconds: Math.min(120, Math.max(5, Math.round(num(r.actionSeconds, 30)))),
+    timeBankSeconds: Math.min(600, Math.max(0, Math.round(num(r.timeBankSeconds, 60)))),
+  };
+  if (cfg.kind === 'sng') cfg.minPlayers = cfg.maxPlayers;
+  validateTourney(cfg);
+  return cfg;
+}
+
 export class Room {
   store: Store;
   clock: Clock;
   tables = new Map<string, Table>();
+  tourneys = new Map<string, Tournament>();
   private conns = new Set<Conn>();
   private dirty = new Set<string>();
+  private dirtyT = new Set<string>();
   private flushQueued = false;
 
   constructor(store: Store, clock: Clock = realClock) {
     this.store = store; this.clock = clock;
+    // tournaments first, so their tables come back with their director
+    for (const row of store.liveTourneys()) {
+      const tt = new Tournament(this.host(), row.config, row.state);
+      this.tourneys.set(tt.id, tt);
+    }
     for (const row of store.tables()) {
-      const t = Table.restore(store, row, this.events(), clock);
+      const tid = row.config.tourneyId;
+      const dir = tid ? this.tourneys.get(tid) ?? null : null;
+      if (tid && !dir) { store.closeTable(row.id); continue; }       // a finished tournament's leftover
+      const t = Table.restore(store, row, this.events(), clock, dir);
       this.tables.set(t.id, t);
     }
+    for (const tt of this.tourneys.values()) tt.reconcile();
+  }
+
+  /** what tournaments use to run their tables */
+  private host(): TourneyHost {
+    return {
+      store: this.store, clock: this.clock,
+      openTable: (cfg: TableConfig, director: TableDirector) => {
+        const t = new Table(cfg, this.store, this.events(), this.clock, undefined, director);
+        this.tables.set(t.id, t);
+        return t;
+      },
+      table: (id: string) => this.tables.get(id),
+      dropTable: (t: Table) => this.removeTable(t),
+      changed: (tt: Tournament) => this.markDirtyT(tt.id),
+      moved: (userId: string, tt: Tournament, tableId: string) => {
+        for (const c of this.conns) if (c.user?.id === userId) c.send({ t: 'moved', tourneyId: tt.id, tableId });
+      },
+      balance: (clubId: string, userId: string) => this.balance(clubId, userId),
+    };
   }
 
   private events() {
@@ -101,7 +179,8 @@ export class Room {
         for (const c of this.conns) if (c.watching.has(t.id))
           c.send({ t: 'handEnd', tableId: t.id, ...info, net: c.user && info.net[c.user.id] != null ? { [c.user.id]: info.net[c.user.id] } : {} });
         // a player who left mid-hand is cashed out now — tell them wherever they are
-        for (const id of Object.keys(info.net)) this.balance(t.cfg.clubId, id);
+        if (!t.isTourney) for (const id of Object.keys(info.net)) this.balance(t.cfg.clubId, id);
+        if (t.isTourney) this.markDirtyT(t.cfg.tourneyId!);              // chip counts moved
         this.reap(t);
       },
     };
@@ -118,10 +197,16 @@ export class Room {
   /** a closing table that has emptied is gone (its hands stay in the store) */
   private reap(t: Table): void {
     if (!t.st.closing || !t.isEmpty() || t.hand) return;
+    this.removeTable(t);
+    this.clubChanged(t.cfg.clubId);
+  }
+  /** take a table out of play and tell whoever was watching it */
+  private removeTable(t: Table): void {
     t.close();
     this.store.closeTable(t.id);
     this.tables.delete(t.id);
-    this.clubChanged(t.cfg.clubId);
+    this.dirty.delete(t.id);
+    for (const c of this.conns) if (c.watching.delete(t.id)) c.send({ t: 'tableGone', tableId: t.id, tourneyId: t.cfg.tourneyId ?? null });
   }
 
   /* ---- broadcasting: coalesce every change in one tick into one view ---- */
@@ -129,8 +214,19 @@ export class Room {
     this.dirty.add(id);
     if (!this.flushQueued) { this.flushQueued = true; queueMicrotask(() => this.flush()); }
   }
+  private markDirtyT(id: string): void {
+    this.dirtyT.add(id);
+    if (!this.flushQueued) { this.flushQueued = true; queueMicrotask(() => this.flush()); }
+  }
   flush(): void {
     this.flushQueued = false;
+    const tids = [...this.dirtyT]; this.dirtyT.clear();
+    for (const id of tids) {
+      const tt = this.tourneys.get(id);
+      if (!tt) continue;
+      for (const c of this.conns) if (c.watchingT?.has(id)) c.send({ t: 'tourney', view: tt.view(c.user?.id ?? null) });
+      if (tt.st.status === 'finished' || tt.st.status === 'cancelled') { tt.close(); this.tourneys.delete(id); this.clubChanged(tt.cfg.clubId); }
+    }
     const ids = [...this.dirty]; this.dirty.clear();
     for (const id of ids) {
       const t = this.tables.get(id);
@@ -173,6 +269,18 @@ export class Room {
     if (!c.user) throw new TableError('auth', 'say hello first');
     return c.user;
   }
+  private tourney(id: unknown): Tournament {
+    const tt = this.tourneys.get(String(id));
+    if (!tt) throw new TableError('tourney', 'no such tournament (or it has finished)');
+    return tt;
+  }
+  /** a host for reading finished tournaments: does nothing */
+  private frozenHost(): TourneyHost {
+    const noop = () => {};
+    return { store: { saveTourney: noop } as unknown as Store, clock: { now: () => this.clock.now(), set: () => 0, clear: noop },
+      openTable: () => { throw new Error('frozen'); }, table: () => undefined, dropTable: noop, changed: noop, moved: noop, balance: noop };
+  }
+
   private table(id: unknown): Table {
     const t = this.tables.get(String(id));
     if (!t) throw new TableError('table', 'no such table');
@@ -197,7 +305,9 @@ export class Room {
       t: 'club', ref,
       club: { id: club.id, name: club.name, ownerId: club.ownerId, inviteCode: admin ? club.inviteCode : undefined },
       me: { role: m.role, balance: m.balance },
-      tables: [...this.tables.values()].filter(t => t.cfg.clubId === clubId && !t.st.closing).map(summaryOf),
+      tables: [...this.tables.values()].filter(t => t.cfg.clubId === clubId && !t.st.closing && !t.isTourney).map(summaryOf),
+      tourneys: [...this.tourneys.values()].filter(x => x.cfg.clubId === clubId).map(x => x.summary()),
+      recentTourneys: this.store.recentTourneys(clubId, 10).map(r => new Tournament(this.frozenHost(), r.config, r.state).summary()),
       members: admin ? this.store.members(clubId) : undefined,
       outstanding: admin ? this.store.outstanding(clubId) : undefined,
     });
@@ -284,6 +394,7 @@ export class Room {
       case 'closeTable': {
         const t = this.table(m.tableId);
         this.adminOf(c, t.cfg.clubId);
+        if (t.isTourney) throw new TableError('table', 'tournament tables close by themselves');
         t.shutDown();
         for (const s of t.st.seats) if (s) this.balance(t.cfg.clubId, s.userId);
         this.reap(t);
@@ -308,7 +419,7 @@ export class Room {
       case 'lobby': {
         const clubId = String(m.clubId);
         this.memberOf(c, clubId);
-        c.send({ t: 'lobby', ref, clubId, tables: [...this.tables.values()].filter(t => t.cfg.clubId === clubId && !t.st.closing).map(summaryOf) });
+        c.send({ t: 'lobby', ref, clubId, tables: [...this.tables.values()].filter(t => t.cfg.clubId === clubId && !t.st.closing && !t.isTourney).map(summaryOf) });
         return;
       }
       case 'watch': {
@@ -382,10 +493,59 @@ export class Room {
         });
         return;
       }
+      /* ---------- tournaments ---------- */
+      case 'tourneys': {
+        const clubId = String(m.clubId);
+        this.memberOf(c, clubId);
+        c.send({ t: 'tourneys', ref, clubId,
+          live: [...this.tourneys.values()].filter(x => x.cfg.clubId === clubId).map(x => x.summary()),
+          recent: this.store.recentTourneys(clubId).map(r => new Tournament(this.frozenHost(), r.config, r.state).summary()) });
+        return;
+      }
+      case 'createTourney': {
+        const clubId = String(m.clubId);
+        this.adminOf(c, clubId);
+        const tt = new Tournament(this.host(), tourneyFromRequest(clubId, m.tourney ?? {}));
+        this.tourneys.set(tt.id, tt);
+        this.clubChanged(clubId);
+        c.send({ t: 'tourney', ref, view: tt.view(c.user!.id) });
+        (c.watchingT ??= new Set()).add(tt.id);
+        return;
+      }
+      case 'tourney': {
+        const live = this.tourneys.get(String(m.tourneyId));
+        if (!live) {
+          // finished or cancelled: show the results from the record
+          const row = this.store.tourney(String(m.tourneyId));
+          if (!row) throw new TableError('tourney', 'no such tournament');
+          this.memberOf(c, row.config.clubId);
+          c.send({ t: 'tourney', ref, view: new Tournament(this.frozenHost(), row.config, row.state).view(c.user!.id) });
+          return;
+        }
+        const tt = live;
+        this.memberOf(c, tt.cfg.clubId);
+        (c.watchingT ??= new Set()).add(tt.id);
+        c.send({ t: 'tourney', ref, view: tt.view(c.user!.id) });
+        return;
+      }
+      case 'unwatchTourney': c.watchingT?.delete(String(m.tourneyId)); return;
+      case 'register': {
+        const tt = this.tourney(m.tourneyId);
+        const mem = this.memberOf(c, tt.cfg.clubId);
+        tt.register(this.store.user(mem.userId)!, c.clientSeed);
+        (c.watchingT ??= new Set()).add(tt.id);
+        return;
+      }
+      case 'unregister': { const tt = this.tourney(m.tourneyId); tt.unregister(this.me(c).id); return; }
+      case 'startTourney': { const tt = this.tourney(m.tourneyId); this.adminOf(c, tt.cfg.clubId); tt.start(); return; }
+      case 'cancelTourney': { const tt = this.tourney(m.tourneyId); this.adminOf(c, tt.cfg.clubId); tt.cancel('cancelled by the club'); return; }
       default:
         throw new TableError('proto', 'unknown message ' + m.t);
     }
   }
 
-  close(): void { for (const t of this.tables.values()) t.close(); }
+  close(): void {
+    for (const t of this.tables.values()) t.close();
+    for (const tt of this.tourneys.values()) tt.close();
+  }
 }

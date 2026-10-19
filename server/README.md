@@ -18,6 +18,7 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 | `src/room.ts` | Clubs and their tables, who watches what, permissions, and the message protocol (listed at the top of the file) |
 | `src/server.ts` | WebSocket transport on `/ws`, 16 KB message limit, ping/pong, `/health` |
 | `src/store.ts` | SQLite: users, clubs, members, the club chip ledger and settle-up report, tables, and the hand event log |
+| `src/tournament.ts` | Tournament director: entries and prize pool, the draw, level clock, busts and places, balancing and breaking tables, payouts, restoring after a crash |
 | `src/stakes.ts` | One stake level (small bet / big bet) turned into the posts and bet sizes for any game, so mixed tables keep one level |
 
 ## Guarantees
@@ -51,6 +52,16 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
   - Table creation, with validation.
   - The ledger invariant, checked after every action through play, issues and redeems, removing a member mid-hand and closing a table mid-hand. At the end, the settle-up report is zero-sum and squares with every balance.
   - A regression test for folding and then leaving mid-hand, which used to refund chips already put in.
+- **Tournaments** (`test/tourney.test.ts`):
+  - A sit-and-go from registration to payout.
+  - A 44-player multi-table tournament with late registration. It checks, all through play:
+    - No player is ever seated twice, and every player is where the director thinks.
+    - Tournament chips are conserved.
+    - Tables stay balanced.
+    - Play reaches a final table.
+    - The whole pool is paid out.
+  - Cancelling, and a scheduled start that doesn't get enough players, both refund everyone.
+  - A server crash in the middle of a multi-table tournament: it resumes and finishes.
 - **Crash recovery:** the server is killed mid-hand and restarted from the database, the hand finishes, and every chip is accounted for.
 - **Real WebSockets:** a player disconnects mid-hand, reconnects and gets their turn and cards back.
 - **Load** (M-series Mac, server and all bot clients in one process; bots act every 50–300 ms, far faster than people):
@@ -66,5 +77,5 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 - **Postgres adapter.** Needed for the hosted room. The schema in `store.ts` is plain SQL.
 - **Real sign-in.** The ShakyBets accounts service is planned. Today, dev tokens come from the users table.
 - **Rate limiting and chat.**
-- **Tournaments** (Phase 5).
+- **Tournament extras.** Rebuys and add-ons, bounties, hand-for-hand on the bubble, breaks.
 - **Moving an old dev database forward.** A database from before clubs is refused; move it aside.

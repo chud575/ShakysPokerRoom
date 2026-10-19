@@ -60,14 +60,35 @@
     </div>
     <div class="ctabs">
       <button class="ctab active" data-ctab="tables">Tables</button>
+      <button class="ctab" data-ctab="tourneys">Tournaments</button>
       <button class="ctab adminOnly" data-ctab="members">Members</button>
       <button class="ctab" data-ctab="ledger">Ledger</button>
       <button class="ctab adminOnly" data-ctab="report">Settle up</button>
     </div>
     <div class="cpane active" id="cp-tables"></div>
+    <div class="cpane" id="cp-tourneys"></div>
     <div class="cpane" id="cp-members"></div>
     <div class="cpane" id="cp-ledger"></div>
     <div class="cpane" id="cp-report"></div>
+  </div>
+</section>
+
+<!-- ============ tournament lobby ============ -->
+<section id="tourney" class="screen">
+  <div class="wrap">
+    <div class="clubHead">
+      <div><h2 id="tnTitle"></h2><div class="dim" id="tnSub"></div></div>
+      <div id="tnActions" class="mrow"></div>
+    </div>
+    <div class="tnGrid">
+      <div class="box" id="tnInfo"></div>
+      <div class="box" id="tnLevel"></div>
+      <div class="box" id="tnPay"></div>
+    </div>
+    <div class="tnCols">
+      <div><h4 class="sec">Players</h4><div class="scrollX" id="tnPlayers"></div></div>
+      <div><h4 class="sec">Tables</h4><div id="tnTables"></div></div>
+    </div>
   </div>
 </section>
 
@@ -138,6 +159,29 @@
     <div id="tfGames" class="gamePick"></div>
     <p class="err" id="tfErr"></p>
     <div class="modalBtns"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary" type="submit">Open table</button></div>
+  </form>
+</div>
+<div class="modal" id="tourneyModal">
+  <form class="modalBox wide" id="tourneyForm">
+    <h3>New tournament</h3>
+    <div class="formGrid">
+      <label>Name<input id="toName" maxlength="40" placeholder="e.g. Friday Sit & Go"></label>
+      <label>Type<select id="toKind"><option value="sng">Sit &amp; Go (starts when full)</option><option value="mtt">Scheduled (multi-table)</option></select></label>
+      <label>Buy-in (club chips)<input id="toBuyIn" type="number" min="0" value="1000"></label>
+      <label>Starting stack<input id="toStack" type="number" min="100" value="3000"></label>
+      <label>Players (max)<input id="toMax" type="number" min="2" max="1000" value="6"></label>
+      <label>Seats per table<input id="toSeats" type="number" min="2" max="10" value="6"></label>
+      <label>Minutes per level<input id="toLevel" type="number" min="1" max="120" value="6"></label>
+      <label>Seconds to act<input id="toAct" type="number" min="5" max="120" value="30"></label>
+      <label class="mttOnly">Starts at<input id="toStart" type="datetime-local"></label>
+      <label class="mttOnly">Late registration (levels)<input id="toLate" type="number" min="0" value="4"></label>
+      <label>Hands per game (mixed)<input id="toHpg" type="number" min="1" value="6"></label>
+    </div>
+    <h4 class="sec">Games <span class="dim">— pick one, or several for a rotation</span></h4>
+    <div id="toGames" class="gamePick"></div>
+    <p class="dim">Blinds start near 1/100 of the stack and rise each level; antes from level 4. Payouts follow the field size (6 players: 65/35; 7–10: 50/30/20; …).</p>
+    <p class="err" id="toErr"></p>
+    <div class="modalBtns"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary" type="submit">Create tournament</button></div>
   </form>
 </div>
 <div id="toast"></div>

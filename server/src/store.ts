@@ -24,8 +24,10 @@ export interface LedgerRow {
   actorId: string | null; note: string | null; tableId: string | null; handId: number | null; at: string;
 }
 /** issue/redeem = an admin moving chips in or out of the club (settled off-platform);
-    buyin/rebuy/cashout = chips moving between a member and a table */
-export type LedgerKind = 'issue' | 'redeem' | 'buyin' | 'rebuy' | 'cashout';
+    buyin/rebuy/cashout = chips moving between a member and a cash table;
+    tbuyin/trefund/tprize = tournament entry, refund (unregister/cancel), prize */
+export type LedgerKind = 'issue' | 'redeem' | 'buyin' | 'rebuy' | 'cashout' | 'tbuyin' | 'trefund' | 'tprize';
+const ZERO = (): Record<LedgerKind, number> => ({ issue: 0, redeem: 0, buyin: 0, rebuy: 0, cashout: 0, tbuyin: 0, trefund: 0, tprize: 0 });
 
 export interface ReportRow {
   userId: string; name: string; role: Role; status: MemberStatus;
@@ -76,6 +78,11 @@ create table if not exists actions (
   primary key (hand_id, seq)
 );
 create index if not exists hands_table on hands(table_id, id);
+create table if not exists tournaments (
+  id text primary key, club_id text not null, config text not null, state text not null,
+  status text not null, created_at text not null
+);
+create index if not exists tournaments_club on tournaments(club_id, created_at);
 `;
 const VERSION = 2;
 
@@ -216,13 +223,14 @@ export class Store {
     const rows = this.db.prepare(`select user_id, kind, sum(delta) s from ledger where club_id = ? and at >= ? and at < ? group by user_id, kind`)
       .all(clubId, from ?? '', to ?? '9999') as any[];
     for (const r of rows) {
-      const k = sums.get(r.user_id) ?? { issue: 0, redeem: 0, buyin: 0, rebuy: 0, cashout: 0 };
+      const k = sums.get(r.user_id) ?? ZERO();
       k[r.kind as LedgerKind] = Number(r.s);
       sums.set(r.user_id, k);
     }
     return this.members(clubId).map(m => {
-      const k = sums.get(m.userId) ?? { issue: 0, redeem: 0, buyin: 0, rebuy: 0, cashout: 0 };
-      const buyins = -(k.buyin + k.rebuy), cashouts = k.cashout;
+      const k = sums.get(m.userId) ?? ZERO();
+      // cash games and tournaments together; a refund cancels its tournament buy-in
+      const buyins = -(k.buyin + k.rebuy + k.tbuyin + k.trefund), cashouts = k.cashout + k.tprize;
       return { userId: m.userId, name: m.name, role: m.role, status: m.status, issued: k.issue, redeemed: -k.redeem, buyins, cashouts, played: cashouts - buyins, balance: m.balance };
     });
   }
@@ -235,6 +243,27 @@ export class Store {
   sumBalances(clubId: string): number {
     const r = this.db.prepare('select coalesce(sum(balance), 0) s from members where club_id = ?').get(clubId) as any;
     return Number(r.s);
+  }
+
+  /* ---- tournaments ---- */
+
+  saveTourney(id: string, clubId: string, config: unknown, state: { status: string }): void {
+    this.db.prepare(`insert into tournaments (id, club_id, config, state, status, created_at) values (?, ?, ?, ?, ?, ?)
+      on conflict(id) do update set state = excluded.state, status = excluded.status`)
+      .run(id, clubId, JSON.stringify(config), JSON.stringify(state), state.status, now());
+  }
+  /** tournaments still registering or running (finished ones stay for the record) */
+  liveTourneys(): { config: any; state: any }[] {
+    return (this.db.prepare("select config, state from tournaments where status in ('registering', 'running') order by created_at").all() as any[])
+      .map(r => ({ config: JSON.parse(r.config), state: JSON.parse(r.state) }));
+  }
+  tourney(id: string): { config: any; state: any } | null {
+    const r = this.db.prepare('select config, state from tournaments where id = ?').get(id) as any;
+    return r ? { config: JSON.parse(r.config), state: JSON.parse(r.state) } : null;
+  }
+  recentTourneys(clubId: string, limit = 20): { config: any; state: any }[] {
+    return (this.db.prepare("select config, state from tournaments where club_id = ? and status in ('finished', 'cancelled') order by created_at desc limit ?").all(clubId, limit) as any[])
+      .map(r => ({ config: JSON.parse(r.config), state: JSON.parse(r.state) }));
   }
 
   /* ---- tables ---- */

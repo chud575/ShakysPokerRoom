@@ -45,6 +45,7 @@ export class TestConn implements Conn {
     const m = JSON.parse(JSON.stringify(msg));     // what would go over the wire
     this.inbox.push(m);
     if (m.t === 'table') this.views.set(m.view.id, m.view);
+    if (m.t === 'tableGone') this.views.delete(m.tableId);
     if (m.t === 'error') this.errors.push(m);
     this.onMessage?.(m);
   }
@@ -151,11 +152,13 @@ export function makeClub(store: Store, names: string[], grant: number, clubName 
   return club.id;
 }
 
-/** The club ledger invariant: chips issued - redeemed == balances + chips at the club's tables. */
+/** The club ledger invariant: chips issued - redeemed == balances + chips at the club's cash tables + tournament pools. */
 export function clubChipsBalance(room: Room, store: Store, clubId: string): { outstanding: number; held: number } {
   let held = store.sumBalances(clubId);
+  // entry fees waiting in tournament prize pools are club chips too
+  for (const tt of room.tourneys.values()) if (tt.cfg.clubId === clubId) held += tt.st.pool;
   for (const t of room.tables.values()) {
-    if (t.cfg.clubId !== clubId) continue;
+    if (t.cfg.clubId !== clubId || t.isTourney) continue;        // tournament tables hold tournament chips
     const inHand = new Set<string>();
     if (t.hand) for (const p of t.hand.state.players) { held += p.stack + p.total; inHand.add(p.id); }
     for (const s of t.st.seats) if (s && !inHand.has(s.userId)) held += s.stack;

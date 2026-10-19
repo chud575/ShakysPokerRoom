@@ -8,6 +8,7 @@ import { legalActions, type Legal } from '../../engine/src/engine.ts';
 import { GAMES } from '../../engine/src/games.ts';
 import { handHistory } from '../../engine/src/hh.ts';
 import type { Table } from './table.ts';
+import type { Tournament } from './tournament.ts';
 
 export interface SeatView {
   seat: number;
@@ -37,6 +38,8 @@ export interface TableView {
   /** server clock when this view was made (for countdowns) */
   now: number;
   maxSeats: number;
+  /** tournament tables: the tournament and its current level */
+  tourney: null | { id: string; name: string; level: number; sb: number; bb: number; ante: number; nextAt: number | null; remaining: number };
   mySeat: number;                // 0 = watching
   button: number;
   seats: (SeatView | null)[];
@@ -115,7 +118,13 @@ export function viewFor(t: Table, userId: string | null): TableView {
     next: nextGame ? { id: nextGame.game, name: GAMES[nextGame.game].name, structure: nextGame.structure } : null,
     stakes: { smallBet: cfg.stakes.smallBet, bigBet: cfg.stakes.bigBet },
     buyIn: { min: cfg.minBuyIn, max: cfg.maxBuyIn }, actionSeconds: cfg.actionSeconds, now: t.clockNow(),
-    maxSeats: cfg.maxSeats, mySeat, button: handGame.family === 'stud' ? 0 : st.button,
+    maxSeats: cfg.maxSeats, mySeat,
+    tourney: (() => {
+      const d = t.director as unknown as Tournament | null;
+      if (!d || !t.isTourney) return null;
+      const i = d.levelIndex(), L = d.cfg.levels[i];
+      return { id: d.cfg.id, name: d.cfg.name, level: i + 1, sb: L.sb, bb: L.bb, ante: L.ante, nextAt: d.nextLevelAt(), remaining: d.playing().length };
+    })(), button: handGame.family === 'stud' ? 0 : st.button,
     seats, hand,
   };
 }
