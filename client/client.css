@@ -35,6 +35,9 @@ body.screen-login #login,body.screen-clubs #clubs,body.screen-club #club,body.sc
 body.screen-table #table{display:grid;grid-template-columns:minmax(0,1fr) 300px}
 .panel{max-width:360px;margin:12vh auto 0;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:10px}
 .panel h2{margin:0}
+#devLoginBox,#sbLoginBox{display:flex;flex-direction:column;gap:10px}
+#sbLoginBox[hidden],#devLoginBox[hidden]{display:none}
+a.btn{text-align:center;text-decoration:none}
 .panel input{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:9px 10px}
 
 /* clubs */

@@ -6,6 +6,7 @@ A play-chip online poker room for home games, built to replace PokerStars Home G
 |---|---|---|
 | `engine/` | Rules engine: 13 games, FL/PL/NL, side pots, provably-fair shuffle, PokerStars hand histories | Phase 1: done (36 tests + 4M-hand fuzz with Replayer round trip) |
 | `server/` | Table server: seating, hand loop, event-log persistence and crash recovery, WebSocket protocol, clubs and chip ledger, tournaments | Phases 2, 4, 5: done (20 integration tests, load-tested to 500 players) |
+| `deploy/` | systemd service, nginx site, Litestream backup config, one-time setup and deploy scripts. See [DEPLOY.md](DEPLOY.md) | Phase 6 |
 | `client/` | Web client: clubs, tables in the Replayer's style, action controls, draw picker, fairness check, hand-history download, club admin (members, chips, ledger, settle-up report), tournament lobby and registration | Phases 3–5 |
 
 ## Try it locally
@@ -46,4 +47,4 @@ Not yet: rebuys and add-ons, bounties, hand-for-hand on the bubble, scheduled br
 
 - ~~Phase 4: clubs and the club chip ledger~~ (done)
 - ~~Phase 5: tournaments~~ (done: sit-and-gos and multi-table)
-- Phase 6: hosting (Postgres, ShakyBets sign-in, a new droplet)
+- Phase 6: hosting. ShakyBets sign-in and the deploy kit are done; the droplet goes live by following [DEPLOY.md](DEPLOY.md).

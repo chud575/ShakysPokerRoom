@@ -1,14 +1,23 @@
 /* Start the room.
      DB=room.db PORT=8790 node src/main.ts [--dev]
+   Production settings come from the environment (deploy/poker-room.env.example):
+     ROOM_HANDOFF_SECRET, ROOM_LOGIN_URL, ROOM_ORIGINS, ROOM_SECURE_COOKIE.
    --dev seeds a club ("Shaky Bets Home Game", owner alice) with members
    bob…frank, 100k chips each, and four tables.  Tokens = user names. */
 
 import { Store } from './store.ts';
 import { Room } from './room.ts';
 import { listen } from './server.ts';
+import { authFromEnv } from './auth.ts';
 import type { TableConfig } from './table.ts';
 
 const dev = process.argv.includes('--dev');
+const auth = authFromEnv(process.env, dev);
+if (!dev) {
+  const missing = [!auth.secret || auth.secret.length < 32 ? 'ROOM_HANDOFF_SECRET (32+ chars)' : '', !auth.origins.length ? 'ROOM_ORIGINS' : ''].filter(Boolean);
+  if (missing.length) { console.error('not starting: set ' + missing.join(' and ') + ' (or run with --dev)'); process.exit(1); }
+}
+if (dev) auth.secureCookie = false;
 const store = new Store(process.env.DB ?? 'room.db');
 
 const base = { minBuyIn: 400, maxBuyIn: 4000, actionSeconds: 30, timeBankSeconds: 60, betweenHandsMs: 3000 };
@@ -41,7 +50,7 @@ if (dev) {
 const room = new Room(store);
 if (devClub) for (const cfg of devTables(devClub)) if (!room.tables.has(cfg.id) && !store.tableClub(cfg.id)) room.createTable(cfg);
 
-const srv = await listen(room, Number(process.env.PORT ?? 8790), process.env.HOST ?? '127.0.0.1');
+const srv = await listen(room, Number(process.env.PORT ?? 8790), process.env.HOST ?? '127.0.0.1', undefined, auth);
 console.log(`poker room on ws://127.0.0.1:${srv.port}/ws  (${room.tables.size} tables)` + (devClub ? `  dev club invite code ${store.club(devClub)!.inviteCode}` : ''));
 
 const stop = async () => { room.close(); await srv.close(); process.exit(0); };

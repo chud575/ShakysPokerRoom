@@ -83,6 +83,12 @@ create table if not exists tournaments (
   status text not null, created_at text not null
 );
 create index if not exists tournaments_club on tournaments(club_id, created_at);
+create table if not exists sessions (
+  token_hash text primary key, user_id text not null, created_at text not null, expires_at integer not null
+);
+create table if not exists handoffs (
+  nonce text primary key, at integer not null
+);
 `;
 const VERSION = 2;
 
@@ -130,6 +136,31 @@ export class Store {
     const r = this.db.prepare('select id, name from users where token = ?').get(token) as any;
     return r ? { id: r.id, name: r.name } : null;
   }
+
+  /** a ShakyBets account arriving through a sign-in pass: create or rename */
+  upsertUser(id: string, name: string): User {
+    const cur = this.user(id);
+    let want = name.slice(0, 24) || id;
+    // names are unique in the room; a clash (another account took it) gets a suffix
+    for (let k = 2; this.db.prepare('select 1 from users where name = ? and id <> ?').get(want, id); k++) want = name.slice(0, 20) + '-' + k;
+    if (!cur) this.db.prepare('insert into users (id, name, token, created_at) values (?, ?, null, ?)').run(id, want, now());
+    else if (cur.name !== want) this.db.prepare('update users set name = ? where id = ?').run(want, id);
+    return { id, name: want };
+  }
+  /** a pass may be used once; false if this nonce was seen before */
+  useNonce(nonce: string, atSec: number): boolean {
+    this.db.prepare('delete from handoffs where at < ?').run(atSec - 3600);
+    try { this.db.prepare('insert into handoffs (nonce, at) values (?, ?)').run(nonce, atSec); return true; }
+    catch { return false; }
+  }
+  createSession(tokenHash: string, userId: string, expiresAtSec: number): void {
+    this.db.prepare('insert into sessions (token_hash, user_id, created_at, expires_at) values (?, ?, ?, ?)').run(tokenHash, userId, now(), expiresAtSec);
+  }
+  sessionUser(tokenHash: string, nowSec: number): User | null {
+    const r = this.db.prepare('select u.id, u.name from sessions s join users u on u.id = s.user_id where s.token_hash = ? and s.expires_at > ?').get(tokenHash, nowSec) as any;
+    return r ? { id: r.id, name: r.name } : null;
+  }
+  endSession(tokenHash: string): void { this.db.prepare('delete from sessions where token_hash = ?').run(tokenHash); }
 
   /* ---- clubs & members ---- */
 

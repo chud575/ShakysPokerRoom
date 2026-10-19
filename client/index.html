@@ -22,9 +22,15 @@
 <section id="login" class="screen">
   <form id="loginForm" class="panel">
     <h2>Sign in</h2>
-    <p class="dim">Development sign-in: enter your player token.</p>
-    <input id="token" autocomplete="off" placeholder="token" autofocus>
-    <button class="btn primary" type="submit">Enter the room</button>
+    <div id="sbLoginBox" hidden>
+      <p class="dim">The room uses your Shaky Bets Poker Tools account.</p>
+      <a class="btn primary" id="sbLogin" href="#">Sign in with Shaky Bets</a>
+    </div>
+    <div id="devLoginBox">
+      <p class="dim">Development sign-in: enter your player token.</p>
+      <input id="token" autocomplete="off" placeholder="token" autofocus>
+      <button class="btn primary" type="submit">Enter the room</button>
+    </div>
     <p id="loginErr" class="err"></p>
   </form>
 </section>

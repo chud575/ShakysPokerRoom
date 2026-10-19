@@ -25,10 +25,7 @@ function connect() {
   const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
   S.ws = ws;
   setConn('connecting…');
-  ws.onopen = () => {
-    S.retry = 0; setConn('');
-    if (S.token) send({ t: 'hello', token: S.token, clientSeed: freshSeed() });
-  };
+  ws.onopen = () => { S.retry = 0; setConn(''); };     // the server says 'hi' first
   ws.onmessage = e => onMessage(JSON.parse(e.data));
   ws.onclose = () => {
     if (S.ws !== ws) return;
@@ -47,9 +44,18 @@ function freshSeed() {
 
 function onMessage(m) {
   switch (m.t) {
+    case 'hi':
+      S.devTokens = m.devTokens; S.loginUrl = m.loginUrl;
+      $('#devLoginBox').hidden = !m.devTokens; $('#sbLoginBox').hidden = !!m.devTokens;
+      if (m.loginUrl) $('#sbLogin').href = m.loginUrl;
+      if (m.devTokens) { if (S.token) send({ t: 'hello', token: S.token, clientSeed: freshSeed() }); else showLogin(); }
+      // production: a session cookie signs us in and 'welcome' follows at once; otherwise ask
+      else setTimeout(() => { if (!S.user) showLogin(); }, 400);
+      break;
     case 'welcome':
       S.user = m.user;
-      localStorage.setItem('pr.token', S.token);
+      if (S.devTokens) localStorage.setItem('pr.token', S.token);
+      else send({ t: 'seed', clientSeed: freshSeed() });
       paintMe();
       if (S.tableId) openTable(S.tableId); else if (S.tourneyId) openTourney(S.tourneyId); else if (S.clubId) openClub(S.clubId); else showClubs();
       break;
@@ -913,7 +919,11 @@ $('#back').onclick = () => {
   else if ((S.screen === 'table' || S.screen === 'tourney') && S.clubId) openClub(S.clubId);
   else showClubs();
 };
-$('#logout').onclick = () => { S.token = ''; S.user = null; localStorage.removeItem('pr.token'); S.ws.close(); showLogin(); paintMe(); setTimeout(connect, 50); };
+$('#logout').onclick = () => {
+  sessionStorage.clear();
+  if (!S.devTokens) { location.href = '/auth/logout'; return; }
+  S.token = ''; S.user = null; localStorage.removeItem('pr.token'); S.ws.close(); showLogin(); paintMe(); setTimeout(connect, 50);
+};
 $('#loginForm').onsubmit = e => {
   e.preventDefault();
   S.token = $('#token').value.trim();
@@ -922,5 +932,5 @@ $('#loginForm').onsubmit = e => {
 };
 window.addEventListener('resize', () => { if (S.screen === 'table') paintTable(); });
 
-if (S.token) setScreen('clubs'); else showLogin();
+setScreen(S.token ? 'clubs' : 'login');
 connect();

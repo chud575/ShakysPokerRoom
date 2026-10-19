@@ -19,6 +19,7 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 | `src/server.ts` | WebSocket transport on `/ws`, 16 KB message limit, ping/pong, `/health` |
 | `src/store.ts` | SQLite: users, clubs, members, the club chip ledger and settle-up report, tables, and the hand event log |
 | `src/tournament.ts` | Tournament director: entries and prize pool, the draw, level clock, busts and places, balancing and breaking tables, payouts, restoring after a crash |
+| `src/auth.ts` | ShakyBets sign-in: a one-time signed pass from the accounts service, then a room session cookie |
 | `src/stakes.ts` | One stake level (small bet / big bet) turned into the posts and bet sizes for any game, so mixed tables keep one level |
 
 ## Guarantees
@@ -28,6 +29,17 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 - **Atomic hand ends.** The result, the history, the new stacks and any cash-outs are written in one transaction.
 - **Provably fair.** Each hand publishes `SHA-256(serverSeed)` before any action. Players' client seeds feed the deck. The server seed is revealed when the hand ends. `{t:'history'}` returns the player's own PokerStars-format history together with the proof.
 - **Hole-card secrecy.** Every view sent in the tests (6 players plus an observer, all 13 games) is checked against the real hand. Mutating the masking code makes the test fail.
+
+## Sign-in
+
+The production server refuses to start without `ROOM_HANDOFF_SECRET` and `ROOM_ORIGINS`.
+
+1. A player with the **Poker Room** tool opens `shakybetspokertools.com/room`.
+2. The accounts service redirects them to `/auth/handoff?t=<pass>`. The pass is HMAC-signed with the shared secret, lasts 60 seconds and works once.
+3. The room sets an HttpOnly `pr_session` cookie, and the WebSocket signs in from that cookie.
+4. Sockets from other sites are refused, which stops cross-site WebSocket hijacking.
+
+Dev tokens (`{t:'hello', token}`) only work with `--dev`. Tests: `test/auth.test.ts`.
 
 ## Clubs
 
@@ -75,7 +87,6 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 
 - **Blind rules for new players.** Missed and dead blinds, and "wait for the big blind". Right now a new player is dealt in on the next hand.
 - **Postgres adapter.** Needed for the hosted room. The schema in `store.ts` is plain SQL.
-- **Real sign-in.** The ShakyBets accounts service is planned. Today, dev tokens come from the users table.
 - **Rate limiting and chat.**
 - **Tournament extras.** Rebuys and add-ons, bounties, hand-for-hand on the bubble, breaks.
 - **Moving an old dev database forward.** A database from before clubs is refused; move it aside.

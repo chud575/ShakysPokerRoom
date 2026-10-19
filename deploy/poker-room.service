@@ -1,0 +1,30 @@
+# /etc/systemd/system/poker-room.service
+[Unit]
+Description=Shaky Bets Poker Room (table server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pokerroom
+Group=pokerroom
+WorkingDirectory=/opt/poker-room/server
+EnvironmentFile=/etc/poker-room.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/main.ts
+# a restart mid-hand is safe: every hand is replayed from the event log
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+LimitNOFILE=65536
+
+# hardening: the service can only write its database directory
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/poker-room
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

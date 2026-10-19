@@ -135,6 +135,9 @@ export class Room {
   private dirtyT = new Set<string>();
   private flushQueued = false;
 
+  /** allow { t:'hello', token } sign-ins (dev and tests; production signs in by cookie) */
+  devTokens = true;
+
   constructor(store: Store, clock: Clock = realClock) {
     this.store = store; this.clock = clock;
     // tournaments first, so their tables come back with their director
@@ -245,6 +248,11 @@ export class Room {
 
   /* ---- connections ---- */
   connect(c: Conn): void { this.conns.add(c); }
+  /** signed in by the transport (session cookie) */
+  signIn(c: Conn, user: User): void {
+    c.user = user;
+    c.send({ t: 'welcome', user });
+  }
   disconnect(c: Conn): void {
     this.conns.delete(c);
     if (c.user) for (const id of c.watching) this.presence(id, c.user.id);
@@ -318,6 +326,10 @@ export class Room {
     const ref = m.ref;
     switch (m.t) {
       case 'hello': {
+        if (!this.devTokens) {
+          if (c.user) { if (m.clientSeed) c.clientSeed = String(m.clientSeed).slice(0, 128); c.send({ t: 'welcome', user: c.user, ref }); return; }
+          throw new TableError('auth', 'please sign in');
+        }
         const u = this.store.userByToken(String(m.token ?? ''));
         if (!u) throw new TableError('auth', 'unknown token');
         c.user = u;
