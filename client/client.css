@@ -31,15 +31,48 @@ button,select,input{font:inherit;color:inherit}
 
 /* ---------- screens ---------- */
 .screen{display:none;height:calc(100vh - var(--top))}
-body.screen-login #login,body.screen-lobby #lobby{display:block;overflow:auto}
+body.screen-login #login,body.screen-clubs #clubs,body.screen-club #club{display:block;overflow:auto}
 body.screen-table #table{display:grid;grid-template-columns:minmax(0,1fr) 300px}
 .panel{max-width:360px;margin:12vh auto 0;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:22px;display:flex;flex-direction:column;gap:10px}
 .panel h2{margin:0}
 .panel input{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:9px 10px}
 
-#lobby{padding:18px max(16px,calc(50vw - 520px))}
-.lobbyHead{display:flex;align-items:center;justify-content:space-between}
-#tableList{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+/* clubs */
+.wrap{max-width:1040px;margin:0 auto;padding:18px 16px 40px}
+.wrap h2{margin:4px 0 14px}
+#clubList,.tableGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.twoForms{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:22px}
+.box{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.box h3{margin:0}.box p{margin:0}
+input.inp,.box input,.formGrid input,.ledgerBar select,.ledgerBar input,.mrow input{background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:8px 9px;min-width:0}
+.pill{display:inline-block;font-size:10.5px;border-radius:9px;padding:0 7px;border:1px solid var(--line);color:var(--dim)}
+.pill.owner{color:#ffd79a;border-color:#6b5420}.pill.admin{color:#b8d8ff;border-color:#2f5a8c}.pill.pending{color:var(--warn);border-color:#6b5a20}
+.clubHead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.clubHead h2{margin:0}
+#clubBal{font-variant-numeric:tabular-nums;color:var(--dim)} #clubBal b{color:#fff;font-size:18px}
+.ctabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:14px 0 12px;overflow-x:auto}
+.ctab{background:none;border:none;border-bottom:2px solid transparent;padding:8px 12px;color:var(--dim);cursor:pointer;white-space:nowrap}
+.ctab.active{color:#fff;border-bottom-color:var(--accent)}
+body:not(.isAdmin) .adminOnly{display:none}
+.cpane{display:none}.cpane.active{display:block}
+.paneBar{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap}
+.grid{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.grid th{text-align:left;color:var(--dim2);font-weight:600;font-size:11px;letter-spacing:.6px;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.grid td{padding:7px 8px;border-bottom:1px solid #1e2530;vertical-align:middle}
+.grid td.num,.grid th.num{text-align:right}
+.grid tfoot td{font-weight:700;border-top:1px solid var(--line)}
+.scrollX{overflow-x:auto}
+.pos{color:var(--good)}.neg{color:var(--bad)}
+.mrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.mrow input{width:90px;padding:6px}.mrow input.note{width:140px}
+.btn.sm{padding:4px 9px;font-size:12px}
+.ledgerBar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.invite{font:600 16px ui-monospace,Menlo,monospace;letter-spacing:2px;color:#fff;background:var(--bg3);border:1px dashed var(--line);border-radius:7px;padding:4px 10px}
+.formGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
+.formGrid label{display:flex;flex-direction:column;gap:3px;color:var(--dim);font-size:12px}
+.gamePick{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px}
+.gamePick label{display:flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--line);border-radius:7px;padding:6px 8px}
+.gamePick select{margin-left:auto;background:var(--bg2);border:1px solid var(--line);border-radius:5px;padding:2px 4px}
 .tcard{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;cursor:pointer;display:flex;flex-direction:column;gap:4px}
 .tcard:hover{border-color:var(--accent)}
 .tcard b{font-size:15px;color:#fff}

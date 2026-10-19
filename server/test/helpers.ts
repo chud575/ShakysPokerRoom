@@ -133,6 +133,32 @@ export function leaks(room: Room, viewerId: string | null, v: TableView): string
   return out;
 }
 
+/** the club the next `table()` belongs to (set by makeClub) */
+let CLUB = '';
 export function table(id: string, games: TableConfig['games'], extra: Partial<TableConfig> = {}): TableConfig {
-  return { id, name: id, maxSeats: 6, games, handsPerGame: 3, stakes: { smallBet: 20, bigBet: 40 }, ...BASE, ...extra };
+  return { id, clubId: CLUB, name: id, maxSeats: 6, games, handsPerGame: 3, stakes: { smallBet: 20, bigBet: 40 }, ...BASE, ...extra };
+}
+
+/** users (token = name), a club owned by the first, everyone active with `grant` chips issued */
+export function makeClub(store: Store, names: string[], grant: number, clubName = 'Test Club'): string {
+  for (const n of names) if (!store.user(n)) store.createUser(n, n, n);
+  const club = store.createClub(names[0], clubName);
+  for (const n of names) {
+    if (n !== names[0]) { store.requestJoin(club.id, n); store.setMember(club.id, n, { status: 'active' }); }
+    if (grant) store.adjust(club.id, n, grant, 'issue', { actorId: names[0] });
+  }
+  CLUB = club.id;
+  return club.id;
+}
+
+/** The club ledger invariant: chips issued - redeemed == balances + chips at the club's tables. */
+export function clubChipsBalance(room: Room, store: Store, clubId: string): { outstanding: number; held: number } {
+  let held = store.sumBalances(clubId);
+  for (const t of room.tables.values()) {
+    if (t.cfg.clubId !== clubId) continue;
+    const inHand = new Set<string>();
+    if (t.hand) for (const p of t.hand.state.players) { held += p.stack + p.total; inHand.add(p.id); }
+    for (const s of t.st.seats) if (s && !inHand.has(s.userId)) held += s.stack;
+  }
+  return { outstanding: store.outstanding(clubId), held };
 }

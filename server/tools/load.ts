@@ -16,12 +16,17 @@ const MIX: [GameId, Structure][] = [['holdem', 'NL'], ['omaha', 'PL'], ['omaha8'
 const store = new Store(':memory:');
 const room = new Room(store);
 const nTables = Math.ceil(players / 6);
+for (let i = 0; i < players; i++) store.createUser('u' + i, 'Bot' + i, 'tok' + i);
+const club = store.createClub('u0', 'Load');
+for (let i = 0; i < players; i++) {
+  if (i) { store.requestJoin(club.id, 'u' + i); store.setMember(club.id, 'u' + i, { status: 'active' }); }
+  store.adjust(club.id, 'u' + i, 10_000_000, 'issue');
+}
 for (let i = 0; i < nTables; i++) {
   const [game, structure] = MIX[i % MIX.length];
-  room.createTable({ id: 't' + i, name: 'T' + i, maxSeats: 6, games: [{ game, structure }], handsPerGame: 1, stakes: { smallBet: 20, bigBet: 40 },
+  room.createTable({ id: 't' + i, clubId: club.id, name: 'T' + i, maxSeats: 6, games: [{ game, structure }], handsPerGame: 1, stakes: { smallBet: 20, bigBet: 40 },
     minBuyIn: 100, maxBuyIn: 100000, actionSeconds: 30, timeBankSeconds: 30, betweenHandsMs: 500 });
 }
-for (let i = 0; i < players; i++) store.createUser('u' + i, 'Bot' + i, 'tok' + i, 10_000_000);
 const srv = await listen(room, 0);
 const url = `ws://127.0.0.1:${srv.port}/ws`;
 

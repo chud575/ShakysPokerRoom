@@ -14,6 +14,8 @@ import type { Store, User } from './store.ts';
 
 export interface TableConfig {
   id: string;
+  /** the club whose chips are played here; only its members may sit */
+  clubId: string;
   name: string;
   maxSeats: number;
   /** one entry = a fixed game; several = a rotation (HORSE, 8-Game…) */
@@ -46,6 +48,8 @@ export interface TableState {
   handsPlayed: number;
   rotation: number;            // index into config.games
   handsThisGame: number;
+  /** an admin closed the table: no new hands; everyone is cashed out */
+  closing?: boolean;
 }
 
 export interface LiveHand {
@@ -114,7 +118,7 @@ export class Table {
     validateConfig(cfg);
     this.cfg = cfg; this.store = store; this.ev = ev; this.clock = clock;
     this.st = state ?? { seats: new Array(cfg.maxSeats).fill(null), button: 0, handsPlayed: 0, rotation: 0, handsThisGame: 0 };
-    if (!state) store.saveTable(cfg.id, cfg, this.st);
+    if (!state) store.saveTable(cfg.id, cfg.clubId, cfg, this.st);
   }
 
   /** Rebuild a table (and any hand in progress) from the store. */
@@ -140,6 +144,11 @@ export class Table {
   handIndex(userId: string): number {
     return this.hand ? this.hand.state.players.findIndex(p => p.id === userId) : -1;
   }
+  /** dealt into the hand in progress (folded or not): their seat's chips are
+      only settled when that hand ends, so they cannot be cashed out before */
+  private inCurrentHand(userId: string): boolean {
+    return this.handIndex(userId) >= 0 && this.hand!.state.phase !== 'done';
+  }
   private inLiveHand(userId: string): boolean {
     const i = this.handIndex(userId);
     return i >= 0 && this.hand!.state.phase !== 'done' && !this.hand!.state.players[i].folded;
@@ -149,13 +158,14 @@ export class Table {
   /* ---------------- seating ---------------- */
 
   sit(user: User, seat: number, buyIn: number, clientSeed = ''): void {
+    if (this.st.closing) throw new TableError('closed', 'this table is closing');
     if (!(seat >= 1 && seat <= this.cfg.maxSeats)) throw new TableError('seat', 'no such seat');
     if (this.st.seats[seat - 1]) throw new TableError('seat', 'seat taken');
     if (this.seatOf(user.id)) throw new TableError('seat', 'already seated here');
     if (!Number.isInteger(buyIn) || buyIn < this.cfg.minBuyIn || buyIn > this.cfg.maxBuyIn)
       throw new TableError('buyin', `buy in for ${this.cfg.minBuyIn} to ${this.cfg.maxBuyIn}`);
     this.store.tx(() => {
-      this.store.adjust(user.id, -buyIn, 'buyin', this.id);
+      this.store.adjust(this.cfg.clubId, user.id, -buyIn, 'buyin', { tableId: this.id });
       this.st.seats[seat - 1] = { userId: user.id, name: user.name, stack: buyIn, sittingOut: false, leaving: false, timeBank: this.cfg.timeBankSeconds, clientSeed: clientSeed.slice(0, 128) };
       this.save();
     });
@@ -170,7 +180,7 @@ export class Table {
     if (this.handIndex(userId) >= 0 && this.hand!.state.phase !== 'done') throw new TableError('busy', 'wait for the hand to finish');
     const s = this.st.seats[seat - 1]!;
     if (!Number.isInteger(amount) || amount <= 0 || s.stack + amount > this.cfg.maxBuyIn) throw new TableError('buyin', 'at most ' + (this.cfg.maxBuyIn - s.stack));
-    this.store.tx(() => { this.store.adjust(userId, -amount, 'rebuy', this.id); s.stack += amount; this.save(); });
+    this.store.tx(() => { this.store.adjust(this.cfg.clubId, userId, -amount, 'rebuy', { tableId: this.id }); s.stack += amount; this.save(); });
     this.ev.changed(this);
     this.scheduleStart(0);
   }
@@ -179,10 +189,10 @@ export class Table {
     const seat = this.seatOf(userId);
     if (!seat) return;
     const s = this.st.seats[seat - 1]!;
-    if (this.inLiveHand(userId)) {
+    if (this.inCurrentHand(userId)) {
       s.leaving = true; s.sittingOut = true; this.save();
       const i = this.handIndex(userId);
-      if (this.hand!.state.toAct === i) this.autoAct(true);
+      if (this.inLiveHand(userId) && this.hand!.state.toAct === i) this.autoAct(true);
       else this.ev.changed(this);
       return;
     }
@@ -193,7 +203,7 @@ export class Table {
   private cashOut(seat: number): void {
     const s = this.st.seats[seat - 1]!;
     this.store.tx(() => {
-      if (s.stack > 0) this.store.adjust(s.userId, s.stack, 'cashout', this.id);
+      if (s.stack > 0) this.store.adjust(this.cfg.clubId, s.userId, s.stack, 'cashout', { tableId: this.id, handId: this.last?.id });
       this.st.seats[seat - 1] = null;
       this.save();
     });
@@ -232,7 +242,7 @@ export class Table {
   }
 
   maybeStart(): void {
-    if (this.hand) return;
+    if (this.hand || this.st.closing) return;
     const seats = this.eligible();
     if (seats.length < 2) return;
     const { game, structure } = this.current();
@@ -342,7 +352,7 @@ export class Table {
       });
       this.st.seats.forEach((seat, i) => {
         if (!seat) return;
-        if (seat.leaving) this.cashOut(i + 1);
+        if (seat.leaving || this.st.closing) this.cashOut(i + 1);
         else if (seat.stack === 0) seat.sittingOut = true;              // busted: rebuy to play on
       });
       this.save();
@@ -353,6 +363,17 @@ export class Table {
     this.ev.changed(this);
     this.scheduleStart(this.cfg.betweenHandsMs);
   }
+
+  /** Admin closes the table: no new hands, everyone not in a hand is cashed
+      out now and the rest when the hand ends.  Returns true once empty. */
+  shutDown(): boolean {
+    this.st.closing = true;
+    this.st.seats.forEach((s, i) => { if (s && !this.inCurrentHand(s.userId)) this.cashOut(i + 1); });
+    this.save();
+    this.ev.changed(this);
+    return this.isEmpty();
+  }
+  isEmpty(): boolean { return this.st.seats.every(s => !s); }
 
   /** stop timers (shutdown / tests) */
   close(): void {

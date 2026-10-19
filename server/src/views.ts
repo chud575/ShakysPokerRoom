@@ -27,6 +27,7 @@ export interface SeatView {
 
 export interface TableView {
   id: string;
+  clubId: string;
   name: string;
   game: { id: string; name: string; structure: string };
   next: { id: string; name: string; structure: string } | null;   // after this rotation block
@@ -109,7 +110,7 @@ export function viewFor(t: Table, userId: string | null): TableView {
 
   const nextGame = cfg.games.length > 1 ? cfg.games[nextIdx] : null;
   return {
-    id: cfg.id, name: cfg.name,
+    id: cfg.id, clubId: cfg.clubId, name: cfg.name,
     game: { id: handGame.id, name: handGame.name, structure: hs ? hs.cfg.structure : cur.structure },
     next: nextGame ? { id: nextGame.game, name: GAMES[nextGame.game].name, structure: nextGame.structure } : null,
     stakes: { smallBet: cfg.stakes.smallBet, bigBet: cfg.stakes.bigBet },
@@ -123,7 +124,7 @@ export function viewFor(t: Table, userId: string | null): TableView {
 export function summaryOf(t: Table) {
   const cur = t.current();
   return {
-    id: t.cfg.id, name: t.cfg.name,
+    id: t.cfg.id, clubId: t.cfg.clubId, name: t.cfg.name,
     game: t.cfg.games.length > 1 ? (t.cfg.mixedName ?? 'Mixed') : GAMES[cur.game].name,
     structure: t.cfg.games.length > 1 ? 'mixed' : cur.structure,
     stakes: `${t.cfg.stakes.smallBet}/${t.cfg.stakes.bigBet}`,

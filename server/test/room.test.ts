@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setup, connect, botAct, leaks, table, TestConn, type FakeClock } from './helpers.ts';
+import { setup, connect, botAct, leaks, table, makeClub, clubChipsBalance, TestConn, type FakeClock } from './helpers.ts';
 import { Room } from '../src/room.ts';
 import { Store } from '../src/store.ts';
 import { Stream, handSeed, commitment } from '../../engine/src/rng.ts';
@@ -13,20 +13,16 @@ import { GAME_IDS, GAMES } from '../../engine/src/games.ts';
 const NAMES = ['alice', 'bob', 'carol', 'dave', 'erin', 'frank'];
 const GRANT = 100_000;
 
+let CLUB = '';
 function users(store: Store, n = 6) {
-  for (const u of NAMES.slice(0, n)) store.createUser(u, u, u, GRANT);
+  CLUB = makeClub(store, NAMES.slice(0, n), GRANT);
 }
 
-/** total chips anywhere: balances + stacks at tables (+ chips in a live hand) */
+/** total chips anywhere in the club: balances + stacks at tables (+ chips in a live hand) */
 function chipsEverywhere(room: Room, store: Store, n: number): number {
-  let sum = 0;
-  for (const u of NAMES.slice(0, n)) sum += store.user(u)!.balance;
-  for (const t of room.tables.values()) {
-    const inHand = new Set<string>();
-    if (t.hand) for (const p of t.hand.state.players) { sum += p.stack + p.total; inHand.add(p.id); }
-    for (const s of t.st.seats) if (s && !inHand.has(s.userId)) sum += s.stack;
-  }
-  return sum;
+  const { outstanding, held } = clubChipsBalance(room, store, CLUB);
+  assert.equal(outstanding, n * GRANT, 'issued chips');
+  return held;
 }
 
 /** play until `hands` hands have finished at `tableId` (bots act from their views) */
@@ -71,7 +67,8 @@ test('every game: bots play from their views; chips conserved; no hole-card leak
     const seats = Math.min(6, g.maxSeats);
     room.createTable(table('t', [{ game, structure: g.defaultStructure }], { maxSeats: seats }));
     const conns = NAMES.slice(0, seats).map(u => connect(room, u));
-    const watcher = new TestConn(); room.connect(watcher); room.handle(watcher, { t: 'watch', tableId: 't' });
+    store.createUser('rail', 'rail', 'rail'); store.requestJoin(CLUB, 'rail'); store.setMember(CLUB, 'rail', { status: 'active' });
+    const watcher = connect(room, 'rail'); room.handle(watcher, { t: 'watch', tableId: 't' });
     const problems: string[] = [];
     watchForLeaks(room, [...conns, watcher], problems);
     conns.forEach((c, i) => room.handle(c, { t: 'sit', tableId: 't', seat: i + 1, buyIn: 300 + 400 * i }));
@@ -158,7 +155,7 @@ test('leaving mid-hand folds you and cashes out when the hand ends', () => {
   assert.equal(t.seatOf(leaver.id), 0, 'seat freed');
   const after = store.hand(h.id)!;
   assert.ok(after.done);
-  assert.equal(store.user(leaver.id)!.balance, store.ledgerSum(leaver.id), 'ledger matches balance');
+  assert.equal(store.balance(CLUB, leaver.id), store.ledger(CLUB, { userId: leaver.id }).reduce((a, r) => a + r.delta, 0), 'ledger matches balance');
   assert.equal(chipsEverywhere(room, store, 3), 3 * GRANT);
 });
 
@@ -217,15 +214,15 @@ test('history: your own view only, plus a fairness proof that checks out', () =>
 
 test('buy-ins come from the balance; cannot buy in for more than you have', () => {
   const { store, room } = setup();
-  store.createUser('poor', 'poor', 'poor', 150);
+  const club = makeClub(store, ['poor'], 150);
   room.createTable(table('t', [{ game: 'holdem', structure: 'NL' }]));
   const c = connect(room, 'poor');
   room.handle(c, { t: 'sit', tableId: 't', seat: 1, buyIn: 200, ref: 1 });
-  assert.equal(c.errors[0]?.message, 'insufficient balance');
+  assert.equal(c.errors[0]?.message, 'not enough chips in your club balance');
   assert.equal(room.tables.get('t')!.seatOf('poor'), 0);
   room.handle(c, { t: 'sit', tableId: 't', seat: 1, buyIn: 150 });
-  assert.equal(store.user('poor')!.balance, 0);
+  assert.equal(store.balance(club, 'poor'), 0);
   room.handle(c, { t: 'leave', tableId: 't' });
-  assert.equal(store.user('poor')!.balance, 150);
+  assert.equal(store.balance(club, 'poor'), 150);
 });
 

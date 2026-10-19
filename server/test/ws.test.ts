@@ -7,7 +7,7 @@ import WebSocket from 'ws';
 import { Store } from '../src/store.ts';
 import { Room } from '../src/room.ts';
 import { listen } from '../src/server.ts';
-import { table } from './helpers.ts';
+import { table, makeClub } from './helpers.ts';
 
 class Client {
   ws: WebSocket;
@@ -36,8 +36,9 @@ class Client {
 
 test('websocket: play, drop mid-hand, reconnect, finish', async () => {
   const store = new Store(':memory:');
-  store.createUser('alice', 'alice', 'tok-a', 10_000);
-  store.createUser('bob', 'bob', 'tok-b', 10_000);
+  store.createUser('alice', 'alice', 'tok-a');
+  store.createUser('bob', 'bob', 'tok-b');
+  const club = makeClub(store, ['alice', 'bob'], 10_000);
   const room = new Room(store);
   room.createTable(table('t', [{ game: 'holdem', structure: 'NL' }], { betweenHandsMs: 30, actionSeconds: 5 }));
   const srv = await listen(room, 0);
@@ -48,7 +49,7 @@ test('websocket: play, drop mid-hand, reconnect, finish', async () => {
   a.send({ t: 'hello', token: 'tok-a', ref: 1 });
   b.send({ t: 'hello', token: 'tok-b', ref: 1 });
   await Promise.all([a.next(m => m.t === 'welcome'), b.next(m => m.t === 'welcome')]);
-  a.send({ t: 'lobby', ref: 2 });
+  a.send({ t: 'lobby', clubId: club, ref: 2 });
   const lobby = await a.next(m => m.t === 'lobby');
   assert.equal(lobby.tables[0].id, 't');
 
@@ -96,7 +97,7 @@ test('websocket: play, drop mid-hand, reconnect, finish', async () => {
   const t = room.tables.get('t')!;
   await new Promise(r => setTimeout(r, 50));
   const stacks = t.hand ? t.hand.state.players.reduce((s, p) => s + p.stack + p.total, 0) : t.st.seats.reduce((s, x) => s + (x?.stack ?? 0), 0);
-  assert.equal(store.user('alice')!.balance + store.user('bob')!.balance + stacks, 20_000);
+  assert.equal(store.balance(club, 'alice') + store.balance(club, 'bob') + stacks, 20_000);
 
   room.close();
   await Promise.all([a2.close(), b.close()]);

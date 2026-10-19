@@ -11,8 +11,10 @@ const RANKS = '23456789TJQKA', SUITS = 'cdhs';
 const cardId = code => RANKS.indexOf(code[0]) * 4 + SUITS.indexOf(code[1]);
 
 const S = {
-  ws: null, token: localStorage.getItem('pr.token') || '', user: null, balance: 0,
-  screen: 'login', tables: [], tableId: sessionStorage.getItem('pr.table') || null,
+  ws: null, token: localStorage.getItem('pr.token') || '', user: null,
+  screen: 'login', tableId: sessionStorage.getItem('pr.table') || null,
+  clubId: sessionStorage.getItem('pr.club') || null, clubs: [], club: null, balances: {}, ctab: 'tables',
+  ledgerUser: '',
   view: null, lastEnd: null, offset: 0, sel: new Set(), raiseTo: null, retry: 0, refN: 0,
   histText: '', histId: 0,
 };
@@ -46,14 +48,35 @@ function freshSeed() {
 function onMessage(m) {
   switch (m.t) {
     case 'welcome':
-      S.user = m.user; S.balance = m.user.balance;
+      S.user = m.user;
       localStorage.setItem('pr.token', S.token);
       paintMe();
-      if (S.tableId) openTable(S.tableId); else showLobby();
+      if (S.tableId) openTable(S.tableId); else if (S.clubId) openClub(S.clubId); else showClubs();
       break;
-    case 'lobby': S.tables = m.tables; paintLobby(); break;
+    case 'clubs':
+      S.clubs = m.clubs;
+      for (const c of m.clubs) S.balances[c.id] = c.balance;
+      if (S.screen === 'clubs') paintClubs();
+      break;
+    case 'club':
+      S.club = m; S.clubId = m.club.id; S.balances[m.club.id] = m.me.balance;
+      sessionStorage.setItem('pr.club', m.club.id);
+      if (S.screen === 'club' || S.screen === 'clubs') { if (S.screen !== 'club') setScreen('club'); paintClub(); }
+      paintMe();
+      break;
+    case 'lobby': if (S.club && m.clubId === S.clubId) { S.club.tables = m.tables; if (S.screen === 'club') paintClub(); } break;
+    case 'clubChanged':
+      if (S.screen === 'club' && m.clubId === S.clubId) send({ t: 'club', clubId: S.clubId });
+      if (S.screen === 'clubs') send({ t: 'clubs' });
+      break;
+    case 'ledger': if (m.clubId === S.clubId) paintLedger(m.rows); break;
+    case 'report': if (m.clubId === S.clubId) paintReport(m); break;
     case 'table':
       if (m.view.id !== S.tableId) return;
+      if (S.clubId !== m.view.clubId || S.balances[m.view.clubId] == null) {
+        S.clubId = m.view.clubId; sessionStorage.setItem('pr.club', S.clubId);
+        send({ t: 'club', clubId: S.clubId });            // for the club balance in the top bar
+      }
       S.offset = m.view.now - Date.now();
       if (!S.view || !m.view.hand || !S.view.hand || S.view.hand.id !== m.view.hand.id || !m.view.hand.legal) S.sel.clear();
       if (!m.view.hand?.legal) S.raiseTo = null;
@@ -66,10 +89,15 @@ function onMessage(m) {
       send({ t: 'seed', clientSeed: freshSeed() });
       paintFair();
       break;
-    case 'balance': S.balance = m.balance; paintMe(); break;
+    case 'balance':
+      S.balances[m.clubId] = m.balance; paintMe();
+      if (S.screen === 'club' && S.club && m.clubId === S.clubId) { S.club.me.balance = m.balance; paintClubHead(); }
+      break;
     case 'history': showHistory(m); break;
     case 'error':
       if (m.code === 'auth') { S.token = ''; localStorage.removeItem('pr.token'); showLogin(m.message); return; }
+      if (m.code === 'club' && (S.screen === 'club' || S.screen === 'table') && /not a member|waiting for approval/.test(m.message)) { showClubs(); }
+      if (S.tfPending) { $('#tfErr').textContent = m.message; S.tfPending = false; return; }
       toast(m.message);
       break;
   }
@@ -79,16 +107,29 @@ function onMessage(m) {
 
 function setScreen(s) {
   S.screen = s;
-  document.body.className = 'screen-' + s;
-  $('#toLobby').hidden = s !== 'table';
+  document.body.className = 'screen-' + s + (S.club && S.club.club.id === S.clubId && ['owner', 'admin'].includes(S.club.me.role) ? ' isAdmin' : '');
+  $('#back').hidden = s === 'login' || s === 'clubs';
+  $('#back').textContent = s === 'table' ? '◀ Club' : '◀ Clubs';
   $('#logout').hidden = s === 'login';
   if (s !== 'table') $('#tableTitle').textContent = '';
+  paintMe();
 }
 function showLogin(err) { setScreen('login'); $('#loginErr').textContent = err || ''; $('#token').value = S.token; }
-function showLobby() {
+function leaveTableView() {
   if (S.tableId) send({ t: 'unwatch', tableId: S.tableId });
   S.tableId = null; S.view = null; sessionStorage.removeItem('pr.table');
-  setScreen('lobby'); send({ t: 'lobby' });
+}
+function showClubs() {
+  leaveTableView();
+  S.clubId = null; sessionStorage.removeItem('pr.club');
+  setScreen('clubs'); paintClubs(); send({ t: 'clubs' });
+}
+function openClub(id) {
+  leaveTableView();
+  S.clubId = id; sessionStorage.setItem('pr.club', id);
+  if (!S.club || S.club.club.id !== id) S.club = null;
+  setScreen('club'); paintClub();
+  send({ t: 'club', clubId: id });
 }
 function openTable(id) {
   S.tableId = id; S.view = null; S.lastEnd = null; sessionStorage.setItem('pr.table', id);
@@ -98,22 +139,249 @@ function openTable(id) {
 function paintMe() {
   const me = $('#me'); me.innerHTML = '';
   if (!S.user) return;
-  me.append(S.user.name + ' · ', el('b', null, fmt(S.balance)), ' chips');
+  me.append(S.user.name);
+  if (S.clubId && S.screen !== 'clubs' && S.balances[S.clubId] != null) me.append(' · ', el('b', null, fmt(S.balances[S.clubId])), ' chips');
 }
 
-function paintLobby() {
-  const list = $('#tableList'); list.innerHTML = '';
-  if (!S.tables.length) list.append(el('p', 'dim', 'No tables yet.'));
-  for (const t of S.tables) {
+/* ===================== clubs ===================== */
+
+const ROLE = { owner: 'owner', admin: 'admin', member: 'member' };
+function pill(text, cls) { return el('span', 'pill ' + (cls || ''), text); }
+
+function paintClubs() {
+  const list = $('#clubList'); list.innerHTML = '';
+  if (!S.clubs.length) list.append(el('p', 'dim', 'You are not in a club yet — join one with an invite code, or start your own.'));
+  for (const c of S.clubs) {
+    const d = el('div', 'tcard');
+    const top = el('div', 'meta'); top.append(el('b', null, c.name), pill(c.status === 'pending' ? 'waiting for approval' : ROLE[c.role], c.status === 'pending' ? 'pending' : c.role));
+    const meta = el('div', 'meta'); meta.append(el('span', null, c.status === 'pending' ? 'not approved yet' : fmt(c.balance) + ' chips'));
+    d.append(top, meta);
+    if (c.status === 'active') d.onclick = () => openClub(c.id);
+    else d.style.cursor = 'default';
+    list.append(d);
+  }
+}
+
+function isAdmin() { return S.club && ['owner', 'admin'].includes(S.club.me.role); }
+
+function paintClubHead() {
+  const c = S.club;
+  $('#clubTitle').textContent = c ? c.club.name : 'Loading…';
+  const sub = $('#clubSub'); sub.innerHTML = '';
+  if (!c) return;
+  sub.append('You are ' + (c.me.role === 'owner' ? 'the owner' : c.me.role === 'admin' ? 'an admin' : 'a member'));
+  if (c.club.inviteCode) {
+    sub.append(' · invite code ', el('span', 'invite', c.club.inviteCode), ' ');
+    const b = el('button', 'btn sm ghost', 'New code'); b.onclick = () => { if (confirm('Replace the invite code? The old one stops working.')) send({ t: 'newCode', clubId: c.club.id }); };
+    sub.append(b);
+  }
+  const bal = $('#clubBal'); bal.innerHTML = '';
+  bal.append('Your balance ', el('b', null, fmt(c.me.balance)));
+}
+
+function paintClub() {
+  document.body.classList.toggle('isAdmin', !!isAdmin());
+  paintClubHead();
+  if (!S.club) return;
+  if (!isAdmin() && (S.ctab === 'members' || S.ctab === 'report')) S.ctab = 'tables';
+  document.querySelectorAll('.ctab').forEach(t => t.classList.toggle('active', t.dataset.ctab === S.ctab));
+  document.querySelectorAll('.cpane').forEach(p => p.classList.toggle('active', p.id === 'cp-' + S.ctab));
+  paintClubTables();
+  if (isAdmin()) paintMembers();
+}
+
+function paintClubTables() {
+  const pane = $('#cp-tables'); pane.innerHTML = '';
+  const bar = el('div', 'paneBar');
+  bar.append(el('span', 'dim', S.club.tables.length + ' table' + (S.club.tables.length === 1 ? '' : 's')));
+  if (isAdmin()) { const b = el('button', 'btn primary', '+ New table'); b.onclick = openTableForm; bar.append(b); }
+  pane.append(bar);
+  const grid = el('div', 'tableGrid');
+  if (!S.club.tables.length) grid.append(el('p', 'dim', isAdmin() ? 'No tables yet — open one.' : 'No tables open right now.'));
+  for (const t of S.club.tables) {
     const c = el('div', 'tcard');
     c.append(el('b', null, t.name));
     const meta = el('div', 'meta');
     meta.append(el('span', null, t.game + (t.structure !== 'mixed' ? ' ' + t.structure : '') + ' · ' + t.stakes), el('span', 'seats', t.seated + '/' + t.maxSeats));
     c.append(meta);
     c.onclick = () => openTable(t.id);
-    list.append(c);
+    if (isAdmin()) {
+      const x = el('button', 'btn sm ghost', 'Close table');
+      x.onclick = e => { e.stopPropagation(); if (confirm('Close "' + t.name + '"? Players are cashed out (after the hand in progress).')) send({ t: 'closeTable', tableId: t.id }); };
+      const row = el('div', 'meta'); row.append(el('span'), x); c.append(row);
+    }
+    grid.append(c);
   }
+  pane.append(grid);
 }
+
+function paintMembers() {
+  const pane = $('#cp-members'); pane.innerHTML = '';
+  const club = S.club, owner = club.me.role === 'owner';
+  const bar = el('div', 'paneBar');
+  bar.append(el('span', 'dim', 'Chips in play: ' + fmt(club.outstanding) + ' (issued − redeemed). Issue chips when a player pays you; redeem when you pay them.'));
+  pane.append(bar);
+  const wrap = el('div', 'scrollX'), tbl = el('table', 'grid');
+  const hr = el('tr'); for (const h of ['Member', 'Role', 'Balance', 'Chips', '']) hr.append(el('th', h === 'Balance' ? 'num' : null, h));
+  const thead = el('thead'); thead.append(hr); tbl.append(thead);
+  const body = el('tbody');
+  for (const m of club.members) {
+    if (m.status === 'removed') continue;
+    const tr = el('tr');
+    tr.append(el('td', null, m.name));
+    const rc = el('td'); rc.append(pill(m.status === 'pending' ? 'wants to join' : m.role, m.status === 'pending' ? 'pending' : m.role)); tr.append(rc);
+    tr.append(el('td', 'num', m.status === 'pending' ? '' : fmt(m.balance)));
+    const chips = el('td');
+    if (m.status === 'active') {
+      const f = el('div', 'mrow');
+      const amt = el('input'); amt.type = 'number'; amt.min = 1; amt.placeholder = 'amount';
+      const note = el('input', 'note'); note.placeholder = 'note (optional)';
+      const go = (sign) => {
+        const a = Math.round(Number(amt.value));
+        if (!(a > 0)) { toast('Enter an amount'); return; }
+        send({ t: 'chips', clubId: club.club.id, userId: m.userId, amount: sign * a, note: note.value });
+      };
+      const iss = el('button', 'btn sm', 'Issue'); iss.onclick = () => go(1);
+      const red = el('button', 'btn sm ghost', 'Redeem'); red.onclick = () => go(-1);
+      f.append(amt, iss, red, note);
+      chips.append(f);
+    }
+    tr.append(chips);
+    const act = el('td'); const row = el('div', 'mrow');
+    const btn = (label, msg, cls = 'btn sm ghost', ask) => { const b = el('button', cls, label); b.onclick = () => { if (!ask || confirm(ask)) send({ t: 'member', clubId: club.club.id, userId: m.userId, ...msg }); }; row.append(b); };
+    if (m.status === 'pending') { btn('Approve', { status: 'active' }, 'btn sm primary'); btn('Decline', { status: 'removed' }); }
+    else if (m.role !== 'owner') {
+      if (owner) btn(m.role === 'admin' ? 'Make member' : 'Make admin', { role: m.role === 'admin' ? 'member' : 'admin' });
+      if (owner || m.role === 'member') btn('Remove', { status: 'removed' }, 'btn sm ghost', 'Remove ' + m.name + '? They leave every table (cashed out); their balance stays for you to redeem.');
+    }
+    act.append(row); tr.append(act);
+    body.append(tr);
+  }
+  tbl.append(body); wrap.append(tbl); pane.append(wrap);
+}
+
+/* ---------- ledger & report ---------- */
+
+const KIND = { issue: 'Chips issued', redeem: 'Chips redeemed', buyin: 'Buy-in', rebuy: 'Rebuy', cashout: 'Cash-out' };
+const when = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+function requestLedger() { send({ t: 'ledger', clubId: S.clubId, userId: S.ledgerUser || undefined, limit: 1000 }); }
+
+function paintLedger(rows) {
+  const pane = $('#cp-ledger'); pane.innerHTML = '';
+  const bar = el('div', 'paneBar'), left = el('div', 'ledgerBar');
+  if (isAdmin()) {
+    const sel = el('select');
+    sel.append(new Option('Everyone', ''));
+    for (const m of S.club.members) if (m.status !== 'pending') sel.append(new Option(m.name, m.userId));
+    sel.value = S.ledgerUser;
+    sel.onchange = () => { S.ledgerUser = sel.value; requestLedger(); };
+    left.append(sel);
+  } else left.append(el('span', 'dim', 'Your chip movements in this club'));
+  const csv = el('button', 'btn sm ghost', 'Download CSV');
+  csv.onclick = () => download('ledger.csv', [['time', 'member', 'kind', 'chips', 'table', 'hand', 'by', 'note'],
+    ...rows.map(r => [r.at, r.name, r.kind, r.delta, r.tableId ?? '', r.handId ?? '', r.actorId ?? '', r.note ?? ''])]);
+  bar.append(left, csv); pane.append(bar);
+  const wrap = el('div', 'scrollX'), tbl = el('table', 'grid');
+  const hr = el('tr'); for (const h of ['When', 'Member', 'What', 'Chips', 'Note']) hr.append(el('th', h === 'Chips' ? 'num' : null, h));
+  const thead = el('thead'); thead.append(hr); tbl.append(thead);
+  const body = el('tbody');
+  if (!rows.length) { const tr = el('tr'); const td = el('td', 'dim', 'Nothing yet.'); td.colSpan = 5; tr.append(td); body.append(tr); }
+  for (const r of rows) {
+    const tr = el('tr');
+    tr.append(el('td', null, when(r.at)), el('td', null, r.name), el('td', null, KIND[r.kind] || r.kind),
+      el('td', 'num ' + (r.delta > 0 ? 'pos' : 'neg'), (r.delta > 0 ? '+' : '') + fmt(r.delta)),
+      el('td', 'dim', r.note || (r.actorId && r.actorId !== r.userId ? 'by ' + r.actorId : '')));
+    body.append(tr);
+  }
+  tbl.append(body); wrap.append(tbl); pane.append(wrap);
+}
+
+function requestReport() {
+  const f = $('#rpFrom')?.value, t = $('#rpTo')?.value;
+  const next = d => { const x = new Date(d); x.setDate(x.getDate() + 1); return x.toISOString(); };
+  send({ t: 'report', clubId: S.clubId, from: f ? new Date(f).toISOString() : undefined, to: t ? next(t) : undefined });
+}
+
+function paintReport(m) {
+  const pane = $('#cp-report'); pane.innerHTML = '';
+  const bar = el('div', 'paneBar'), left = el('div', 'ledgerBar');
+  const from = el('input'); from.type = 'date'; from.id = 'rpFrom';
+  const to = el('input'); to.type = 'date'; to.id = 'rpTo';
+  if (m.from) from.value = m.from.slice(0, 10);
+  if (m.to) { const d = new Date(m.to); d.setDate(d.getDate() - 1); to.value = d.toISOString().slice(0, 10); }
+  const go = el('button', 'btn sm', 'Show'); go.onclick = requestReport;
+  left.append('From', from, 'to', to, go);
+  const csv = el('button', 'btn sm ghost', 'Download CSV');
+  csv.onclick = () => download('settle-up.csv', [['member', 'issued', 'redeemed', 'buy-ins', 'cash-outs', 'won/lost', 'balance'],
+    ...m.rows.map(r => [r.name, r.issued, r.redeemed, r.buyins, r.cashouts, r.played, r.balance])]);
+  bar.append(left, csv); pane.append(bar);
+  pane.append(el('p', 'dim', 'Won/lost = cash-outs − buy-ins at the tables in this period (chips still on a table count once the player leaves). Balance = chips off the tables right now. Chips in play: ' + fmt(m.outstanding) + '.'));
+  const wrap = el('div', 'scrollX'), tbl = el('table', 'grid');
+  const cols = [['Member', null], ['Issued', 'issued'], ['Redeemed', 'redeemed'], ['Won / lost', 'played'], ['Balance', 'balance']];
+  const hr = el('tr'); for (const [h, k] of cols) hr.append(el('th', k ? 'num' : null, h));
+  const thead = el('thead'); thead.append(hr); tbl.append(thead);
+  const body = el('tbody'), tot = { issued: 0, redeemed: 0, played: 0, balance: 0 };
+  for (const r of m.rows) {
+    if (r.status === 'pending') continue;
+    const tr = el('tr'); tr.append(el('td', null, r.name + (r.status === 'removed' ? ' (removed)' : '')));
+    for (const [, k] of cols.slice(1)) {
+      tot[k] += r[k];
+      tr.append(el('td', 'num' + (k === 'played' ? (r[k] > 0 ? ' pos' : r[k] < 0 ? ' neg' : '') : ''), (k === 'played' && r[k] > 0 ? '+' : '') + fmt(r[k])));
+    }
+    body.append(tr);
+  }
+  const foot = el('tfoot'), ft = el('tr'); ft.append(el('td', null, 'Total'));
+  for (const [, k] of cols.slice(1)) ft.append(el('td', 'num', fmt(tot[k])));
+  foot.append(ft);
+  tbl.append(body, foot); wrap.append(tbl); pane.append(wrap);
+}
+
+function download(name, rows) {
+  const esc = v => { const s = String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const a = el('a'); a.href = URL.createObjectURL(new Blob([rows.map(r => r.map(esc).join(',')).join('\n') + '\n'], { type: 'text/csv' }));
+  a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+
+/* ---------- new table form ---------- */
+
+const GAMES = [
+  ['holdem', "Hold'em", ['NL', 'FL', 'PL']], ['omaha', 'Omaha', ['PL', 'NL', 'FL']], ['omaha8', 'Omaha Hi/Lo', ['FL', 'PL', 'NL']],
+  ['bigo', 'Big O', ['PL', 'FL', 'NL']], ['plo5', '5 Card PLO', ['PL', 'NL', 'FL']], ['plo6', '6 Card PLO', ['PL', 'NL', 'FL']],
+  ['stud', '7 Card Stud', ['FL']], ['stud8', 'Stud Hi/Lo', ['FL']], ['razz', 'Razz', ['FL']],
+  ['td27', '2-7 Triple Draw', ['FL', 'PL', 'NL']], ['sd27', '2-7 Single Draw', ['NL', 'PL', 'FL']], ['a5td', 'A-5 Triple Draw', ['FL', 'PL', 'NL']], ['badugi', 'Badugi', ['FL', 'PL', 'NL']],
+];
+function openTableForm() {
+  const box = $('#tfGames'); box.innerHTML = '';
+  for (const [id, name, structs] of GAMES) {
+    const l = el('label'); const cb = el('input'); cb.type = 'checkbox'; cb.value = id;
+    const sel = el('select'); for (const x of structs) sel.append(new Option(x === 'NL' ? 'No Limit' : x === 'PL' ? 'Pot Limit' : 'Limit', x));
+    l.append(cb, name, sel); box.append(l);
+  }
+  $('#tfErr').textContent = '';
+  $('#tableModal').classList.add('open');
+}
+$('#tfSmall').oninput = () => { $('#tfBig').value = 2 * Number($('#tfSmall').value || 0); };
+$('#tableForm').onsubmit = e => {
+  e.preventDefault();
+  const games = [...document.querySelectorAll('#tfGames label')].filter(l => l.querySelector('input').checked)
+    .map(l => ({ game: l.querySelector('input').value, structure: l.querySelector('select').value }));
+  if (!games.length) { $('#tfErr').textContent = 'Pick at least one game.'; return; }
+  const n = id => Number($(id).value);
+  S.tfPending = true;
+  send({ t: 'createTable', clubId: S.clubId, table: { name: $('#tfName').value, games, smallBet: n('#tfSmall'), bigBet: n('#tfBig'), maxSeats: n('#tfSeats'),
+    minBuyIn: n('#tfMin'), maxBuyIn: n('#tfMax'), actionSeconds: n('#tfAct'), handsPerGame: n('#tfHpg'), mixedName: $('#tfName').value } });
+  // success shows up as a clubChanged refresh; close optimistically after a beat unless an error came back
+  setTimeout(() => { if (S.tfPending) { S.tfPending = false; closeModals(); } }, 400);
+};
+
+document.querySelectorAll('.ctab').forEach(t => t.onclick = () => {
+  S.ctab = t.dataset.ctab; paintClub();
+  if (S.ctab === 'ledger') requestLedger();
+  if (S.ctab === 'report') requestReport();
+});
+$('#joinForm').onsubmit = e => { e.preventDefault(); const c = $('#joinCode').value.trim(); if (c) { send({ t: 'joinClub', code: c }); $('#joinCode').value = ''; toast('Request sent — the club owner will approve you.'); } };
+$('#createForm').onsubmit = e => { e.preventDefault(); const n = $('#newClubName').value.trim(); if (n) { setScreen('club'); S.club = null; paintClub(); send({ t: 'createClub', name: n }); $('#newClubName').value = ''; } };
 
 /* ===================== the table ===================== */
 
@@ -367,13 +635,14 @@ function paintSeatBar() {
 
 function askBuyIn(seat) {
   const v = S.view;
-  const max = Math.min(v.buyIn.max, S.balance);
+  const bal = S.balances[v.clubId] ?? 0;
+  const max = Math.min(v.buyIn.max, bal);
   if (max < v.buyIn.min) { toast('You need at least ' + fmt(v.buyIn.min) + ' chips to sit here.'); return; }
   const r = $('#buyinRange'), n = $('#buyinNum');
   r.min = n.min = v.buyIn.min; r.max = n.max = max; r.value = n.value = Math.min(max, Math.max(v.buyIn.min, Math.round(v.buyIn.max / 2)));
   r.oninput = () => { n.value = r.value; }; n.oninput = () => { r.value = n.value; };
   $('#buyinTitle').textContent = 'Seat ' + seat + ' — buy in';
-  $('#buyinNote').textContent = fmt(v.buyIn.min) + ' to ' + fmt(v.buyIn.max) + ' · you have ' + fmt(S.balance);
+  $('#buyinNote').textContent = fmt(v.buyIn.min) + ' to ' + fmt(v.buyIn.max) + ' · you have ' + fmt(bal) + ' in the club';
   $('#buyinForm').onsubmit = e => { e.preventDefault(); send({ t: 'sit', tableId: v.id, seat, buyIn: Number(n.value) }); closeModals(); };
   $('#buyinModal').classList.add('open');
 }
@@ -472,8 +741,7 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
   document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + t.dataset.pane));
 });
-$('#toLobby').onclick = showLobby;
-$('#refresh').onclick = () => send({ t: 'lobby' });
+$('#back').onclick = () => { if (S.screen === 'table' && S.clubId) openClub(S.clubId); else showClubs(); };
 $('#logout').onclick = () => { S.token = ''; S.user = null; localStorage.removeItem('pr.token'); S.ws.close(); showLogin(); paintMe(); setTimeout(connect, 50); };
 $('#loginForm').onsubmit = e => {
   e.preventDefault();
@@ -483,5 +751,5 @@ $('#loginForm').onsubmit = e => {
 };
 window.addEventListener('resize', () => { if (S.screen === 'table') paintTable(); });
 
-if (S.token) setScreen('lobby'); else showLogin();
+if (S.token) setScreen('clubs'); else showLogin();
 connect();

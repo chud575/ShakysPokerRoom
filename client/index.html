@@ -10,7 +10,7 @@
 
 <header id="top">
   <div class="brand">Shaky Bets <span>Poker Room</span></div>
-  <button class="btn ghost" id="toLobby" hidden>◀ Lobby</button>
+  <button class="btn ghost" id="back" hidden>◀ Back</button>
   <div id="tableTitle"></div>
   <div class="spacer"></div>
   <div id="conn" class="conn"></div>
@@ -29,10 +29,46 @@
   </form>
 </section>
 
-<!-- ============ lobby ============ -->
-<section id="lobby" class="screen">
-  <div class="lobbyHead"><h2>Tables</h2><button class="btn ghost" id="refresh">Refresh</button></div>
-  <div id="tableList"></div>
+<!-- ============ my clubs ============ -->
+<section id="clubs" class="screen">
+  <div class="wrap">
+    <h2>Your clubs</h2>
+    <div id="clubList"></div>
+    <div class="twoForms">
+      <form id="joinForm" class="box">
+        <h3>Join a club</h3>
+        <p class="dim">Ask the club owner for its invite code.</p>
+        <input id="joinCode" placeholder="Invite code" autocomplete="off">
+        <button class="btn primary" type="submit">Ask to join</button>
+      </form>
+      <form id="createForm" class="box">
+        <h3>Start a club</h3>
+        <p class="dim">You run it: invite players, hand out chips, settle up.</p>
+        <input id="newClubName" placeholder="Club name" maxlength="40">
+        <button class="btn" type="submit">Create club</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ============ one club ============ -->
+<section id="club" class="screen">
+  <div class="wrap">
+    <div class="clubHead">
+      <div><h2 id="clubTitle"></h2><div class="dim" id="clubSub"></div></div>
+      <div id="clubBal"></div>
+    </div>
+    <div class="ctabs">
+      <button class="ctab active" data-ctab="tables">Tables</button>
+      <button class="ctab adminOnly" data-ctab="members">Members</button>
+      <button class="ctab" data-ctab="ledger">Ledger</button>
+      <button class="ctab adminOnly" data-ctab="report">Settle up</button>
+    </div>
+    <div class="cpane active" id="cp-tables"></div>
+    <div class="cpane" id="cp-members"></div>
+    <div class="cpane" id="cp-ledger"></div>
+    <div class="cpane" id="cp-report"></div>
+  </div>
 </section>
 
 <!-- ============ table ============ -->
@@ -84,6 +120,25 @@
       <button class="btn primary" data-close>Close</button>
     </div>
   </div>
+</div>
+<div class="modal" id="tableModal">
+  <form class="modalBox wide" id="tableForm">
+    <h3>New table</h3>
+    <div class="formGrid">
+      <label>Name<input id="tfName" maxlength="40" placeholder="e.g. Thursday HORSE"></label>
+      <label>Small bet / big blind<input id="tfSmall" type="number" min="2" value="20"></label>
+      <label>Big bet (limit games)<input id="tfBig" type="number" min="2" value="40"></label>
+      <label>Seats<input id="tfSeats" type="number" min="2" max="10" value="6"></label>
+      <label>Min buy-in<input id="tfMin" type="number" min="1" value="400"></label>
+      <label>Max buy-in<input id="tfMax" type="number" min="1" value="2000"></label>
+      <label>Seconds to act<input id="tfAct" type="number" min="5" max="120" value="30"></label>
+      <label>Hands per game (mixed)<input id="tfHpg" type="number" min="1" value="6"></label>
+    </div>
+    <h4 class="sec">Games <span class="dim">— pick one, or several for a rotation</span></h4>
+    <div id="tfGames" class="gamePick"></div>
+    <p class="err" id="tfErr"></p>
+    <div class="modalBtns"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary" type="submit">Open table</button></div>
+  </form>
 </div>
 <div id="toast"></div>
 

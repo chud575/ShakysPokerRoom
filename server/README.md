@@ -15,9 +15,9 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 |---|---|
 | `src/table.ts` | One table: seats, buy-ins and rebuys, sit out, leave, button, game rotation, hand loop, action clock and time bank, auto-act on timeout, restoring a table after a crash |
 | `src/views.ts` | Builds what each viewer may see. This is the only place hand state becomes client data, so hole-card secrecy lives here |
-| `src/room.ts` | All tables, who watches what, and the message protocol (listed at the top of the file) |
+| `src/room.ts` | Clubs and their tables, who watches what, permissions, and the message protocol (listed at the top of the file) |
 | `src/server.ts` | WebSocket transport on `/ws`, 16 KB message limit, ping/pong, `/health` |
-| `src/store.ts` | SQLite event log: hands, actions, tables, users, play-chip ledger |
+| `src/store.ts` | SQLite: users, clubs, members, the club chip ledger and settle-up report, tables, and the hand event log |
 | `src/stakes.ts` | One stake level (small bet / big bet) turned into the posts and bet sizes for any game, so mixed tables keep one level |
 
 ## Guarantees
@@ -28,6 +28,14 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 - **Provably fair.** Each hand publishes `SHA-256(serverSeed)` before any action. Players' client seeds feed the deck. The server seed is revealed when the hand ends. `{t:'history'}` returns the player's own PokerStars-format history together with the proof.
 - **Hole-card secrecy.** Every view sent in the tests (6 players plus an observer, all 13 games) is checked against the real hand. Mutating the masking code makes the test fail.
 
+## Clubs
+
+- **Roles.** Owner, admin and member. Joining with an invite code puts you on a pending list until an owner or admin approves you.
+- **Who can do what.** Owners and admins issue and redeem chips, open and close tables, and approve or remove members. Only the owner makes admins, and nobody can change the owner.
+- **Isolation.** A club's tables, hands and ledger are visible only to its active members. Members see only their own ledger rows.
+- **Removing a member.** They leave every club table, cashed out when their hand ends. Their balance stays in the club for an admin to redeem.
+- **Closing a table.** No new hands start. Everyone is cashed out, and the table disappears once it's empty. Its hands stay in the database.
+
 ## Tested
 
 - **Every game:** bots play 60+ hands per game from only what they're sent. Chips are conserved across balances, stacks and pots, and there are no leaks.
@@ -37,6 +45,12 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
   - Illegal and out-of-turn actions are refused with no state change.
   - Leaving mid-hand folds you, then cashes you out when the hand ends.
   - Buy-in limits.
+- **Clubs** (`test/clubs.test.ts`):
+  - The join flow and roles.
+  - Isolation between clubs.
+  - Table creation, with validation.
+  - The ledger invariant, checked after every action through play, issues and redeems, removing a member mid-hand and closing a table mid-hand. At the end, the settle-up report is zero-sum and squares with every balance.
+  - A regression test for folding and then leaving mid-hand, which used to refund chips already put in.
 - **Crash recovery:** the server is killed mid-hand and restarted from the database, the hand finishes, and every chip is accounted for.
 - **Real WebSockets:** a player disconnects mid-hand, reconnects and gets their turn and cards back.
 - **Load** (M-series Mac, server and all bot clients in one process; bots act every 50–300 ms, far faster than people):
@@ -52,4 +66,5 @@ node --disable-warning=ExperimentalWarning tools/load.ts 102 60   # load test
 - **Postgres adapter.** Needed for the hosted room. The schema in `store.ts` is plain SQL.
 - **Real sign-in.** The ShakyBets accounts service is planned. Today, dev tokens come from the users table.
 - **Rate limiting and chat.**
-- **Clubs and the club chip ledger** (Phase 4), **tournaments** (Phase 5), and **the web client** (Phase 3).
+- **Tournaments** (Phase 5).
+- **Moving an old dev database forward.** A database from before clubs is refused; move it aside.
