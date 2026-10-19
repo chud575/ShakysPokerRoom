@@ -1,0 +1,16 @@
+{
+  "name": "poker-room-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Deterministic rules engine for the poker room: 13 games, FL/PL/NL, side pots, PokerStars hand histories.",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "fuzz": "node tools/fuzz.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.2"
+  }
+}
