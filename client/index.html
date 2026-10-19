@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shaky Bets Poker Room</title>
+<link rel="stylesheet" href="client.css">
+</head>
+<body class="screen-login">
+
+<header id="top">
+  <div class="brand">Shaky Bets <span>Poker Room</span></div>
+  <button class="btn ghost" id="toLobby" hidden>◀ Lobby</button>
+  <div id="tableTitle"></div>
+  <div class="spacer"></div>
+  <div id="conn" class="conn"></div>
+  <div id="me"></div>
+  <button class="btn ghost" id="logout" hidden>Sign out</button>
+</header>
+
+<!-- ============ sign in ============ -->
+<section id="login" class="screen">
+  <form id="loginForm" class="panel">
+    <h2>Sign in</h2>
+    <p class="dim">Development sign-in: enter your player token.</p>
+    <input id="token" autocomplete="off" placeholder="token" autofocus>
+    <button class="btn primary" type="submit">Enter the room</button>
+    <p id="loginErr" class="err"></p>
+  </form>
+</section>
+
+<!-- ============ lobby ============ -->
+<section id="lobby" class="screen">
+  <div class="lobbyHead"><h2>Tables</h2><button class="btn ghost" id="refresh">Refresh</button></div>
+  <div id="tableList"></div>
+</section>
+
+<!-- ============ table ============ -->
+<section id="table" class="screen">
+  <div id="stage">
+    <div id="gameLine"></div>
+    <div id="tableWrap">
+      <div id="felt">
+        <div id="feltInner">
+          <div id="centre">
+            <div id="streetTag"></div>
+            <div id="board"></div>
+            <div id="potBox"><span class="lbl">POT</span> <span id="potVal">0</span></div>
+          </div>
+        </div>
+        <div id="seats"></div>
+      </div>
+    </div>
+    <div id="actionBar"></div>
+    <div id="seatBar"></div>
+  </div>
+  <aside id="side">
+    <div class="tabs">
+      <button class="tab active" data-pane="log">Hand log</button>
+      <button class="tab" data-pane="fair">Fairness</button>
+    </div>
+    <div class="pane active" id="pane-log"></div>
+    <div class="pane" id="pane-fair"></div>
+  </aside>
+</section>
+
+<!-- ============ dialogs ============ -->
+<div class="modal" id="buyinModal">
+  <form class="modalBox" id="buyinForm">
+    <h3 id="buyinTitle">Buy in</h3>
+    <div class="row"><input type="range" id="buyinRange"><input type="number" id="buyinNum"></div>
+    <p class="dim" id="buyinNote"></p>
+    <div class="modalBtns"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary" type="submit">Take seat</button></div>
+  </form>
+</div>
+<div class="modal" id="histModal">
+  <div class="modalBox wide">
+    <h3 id="histTitle">Hand history</h3>
+    <pre id="histText"></pre>
+    <div id="histProof" class="dim"></div>
+    <div class="modalBtns">
+      <button class="btn ghost" id="histCopy">Copy</button>
+      <button class="btn ghost" id="histSave">Download .txt</button>
+      <button class="btn primary" data-close>Close</button>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script type="module" src="client.js"></script>
+</body>
+</html>
